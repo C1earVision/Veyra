@@ -29,6 +29,7 @@ os.environ.setdefault("LANGCHAIN_OPENAI_STREAM_CHUNK_TIMEOUT_S", "0")
 app = FastAPI()
 
 origins = [
+    "https://kadash-chi.vercel.app",
     "https://kadash-api-zeta.vercel.app",
     "https://veyra-47mr-pi.vercel.app",
     "http://localhost:5173",
