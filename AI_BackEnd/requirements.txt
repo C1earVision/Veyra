@@ -3,7 +3,6 @@ langchain-community
 langchain-experimental
 fastapi
 python-dotenv
-streamlit
 uvicorn
 pydantic
 PyJWT
@@ -16,7 +15,5 @@ langchain_openai
 langgraph
 langchain-google-community[places]
 psycopg2-binary
-matplotlib
 pandas
-seaborn
 numpy
