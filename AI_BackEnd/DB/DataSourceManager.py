@@ -34,9 +34,17 @@ class DataSourceManager:
         self._load_persisted_file_sources()
 
     def get_default_db(self) -> Optional[SQLDatabase]:
-        if self._default_db_instance is None:
+        if self._default_db_instance is not None:
+            return self._default_db_instance
+
+        try:
+            # Attempt to connect to the default database
+            # Only if environment variables are present
             self._default_db_instance = self.default_db_conn.connection()
-        return self._default_db_instance
+            return self._default_db_instance
+        except Exception as e:
+            print(f"[DataSourceManager] Default database connection failed: {e}")
+            return None
 
     def register_database_connection(self, connection_url: str, custom_name: Optional[str] = None) -> Dict[str, Any]:
         raw_url = connection_url.strip()
@@ -291,7 +299,12 @@ class DataSourceManager:
             self._restore_file_source(source_id)
 
     def _default_source_record(self) -> Optional[Dict[str, Any]]:
-        default_db = self.get_default_db()
+        try:
+            default_db = self.get_default_db()
+        except Exception as e:
+            print(f"[DataSourceManager] Error retrieving default DB record: {e}")
+            default_db = None
+
         if not default_db:
             return None
         tables = default_db.get_usable_table_names()
