@@ -27,8 +27,22 @@ class DataSourceManager:
 
     def _init_manager(self):
         self.sources: Dict[str, Dict[str, Any]] = {}
-        self.storage_dir = os.path.join(os.path.dirname(__file__), "../storage/sessions")
-        os.makedirs(self.storage_dir, exist_ok=True)
+
+        # Vercel and other serverless platforms have read-only filesystems.
+        # We must use /tmp for any local storage.
+        if os.environ.get("VERCEL") or os.environ.get("ENVIRONMENT") == "production":
+            self.storage_dir = "/tmp/sessions"
+        else:
+            self.storage_dir = os.path.join(os.path.dirname(__file__), "../storage/sessions")
+
+        try:
+            os.makedirs(self.storage_dir, exist_ok=True)
+        except Exception as e:
+            print(f"[DataSourceManager] Warning: Could not create storage dir {self.storage_dir}: {e}")
+            # Fallback to /tmp if the primary attempt fails
+            self.storage_dir = "/tmp/sessions"
+            os.makedirs(self.storage_dir, exist_ok=True)
+
         self.default_db_conn = dataBaseConnection()
         self._default_db_instance = None
         self._load_persisted_file_sources()
