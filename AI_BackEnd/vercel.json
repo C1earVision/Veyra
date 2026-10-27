@@ -1,9 +1,9 @@
 {
   "version": 2,
-  "rewrites": [
+  "routes": [
     {
-      "source": "/(.*)",
-      "destination": "main.py"
+      "src": "/(.*)",
+      "dest": "main.py"
     }
   ],
   "headers": [
@@ -16,7 +16,7 @@
         },
         {
           "key": "Access-Control-Allow-Origin",
-          "value": "https://Veyra-chi.vercel.app"
+          "value": "https://kadash-chi.vercel.app"
         },
         {
           "key": "Access-Control-Allow-Methods",
