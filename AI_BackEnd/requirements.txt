@@ -16,5 +16,7 @@ psycopg2-binary
 pandas
 numpy
 duckdb
+duckdb-engine
+sqlalchemy
 matplotlib
 python-multipart
