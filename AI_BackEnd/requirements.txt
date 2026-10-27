@@ -15,4 +15,5 @@ langgraph
 psycopg2-binary
 pandas
 numpy
+duckdb
 matplotlib
