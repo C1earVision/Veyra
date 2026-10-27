@@ -368,7 +368,13 @@ function ChatView({
   const chatContainerRef = useRef(null);
   const abortControllerRef = useRef(null);
   const userStoppedRef = useRef(false);
+  const currentChatIdRef = useRef(currentChatId);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+
+  // Keep ref in sync so streaming callbacks always see the latest chat ID
+  useEffect(() => {
+    currentChatIdRef.current = currentChatId;
+  }, [currentChatId]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -465,6 +471,20 @@ function ChatView({
 
     userStoppedRef.current = false;
     abortControllerRef.current = new AbortController();
+
+    // Early-save the session with the user message so the "else" branch
+    // (when the user navigates away during streaming) can find it.
+    const earlyMessages = [...messages, newMessage];
+    const earlyTitle = generateChatTitle(textToSend);
+    onSaveChatSession({
+      id: sessionId,
+      title: earlyTitle,
+      createdAt: new Date().toISOString(),
+      source: activeSource,
+      modelId: selectedModel,
+      messages: earlyMessages,
+      contextMessages: storedMessages,
+    });
 
     try {
       const session = getStoredAuth();
@@ -577,11 +597,41 @@ function ChatView({
       updatedMessages.push(`${aiMessage.role}: ${aiMessage.content};`);
       localStorage.setItem("messages", JSON.stringify(updatedMessages));
 
-      setMessages((prev) => {
-        const filtered = prev.filter((msg) => !msg.isLoading);
-        const finalMessages = [...filtered, aiMessage];
+      // Check if user has navigated away from this chat while streaming
+      const stillOnSameChat =
+        currentChatIdRef.current === sessionId ||
+        currentChatIdRef.current === null;
 
-        // Auto-save to recent chats
+      if (stillOnSameChat) {
+        setMessages((prev) => {
+          const filtered = prev.filter((msg) => !msg.isLoading);
+          const finalMessages = [...filtered, aiMessage];
+
+          // Auto-save to recent chats
+          const firstUser = finalMessages.find((m) => m.role === "User_Message");
+          const title = generateChatTitle(firstUser?.content);
+          onSaveChatSession({
+            id: sessionId,
+            title,
+            createdAt: new Date().toISOString(),
+            source: sessionSource,
+            modelId: selectedModel,
+            messages: finalMessages,
+            contextMessages: updatedMessages,
+          });
+
+          return finalMessages;
+        });
+      } else {
+        // User navigated away — save the completed response to the original
+        // session in storage (so it's visible when they return) but do NOT
+        // overwrite the current on-screen messages.
+        // Reconstruct the session from what was previously saved in chat storage.
+        const existingSession = getRecentChats().find((c) => c.id === sessionId);
+        const previousMessages = existingSession?.messages || [];
+        // Remove any leftover loading placeholders and append the real AI answer
+        const cleanPrev = previousMessages.filter((m) => !m.isLoading);
+        const finalMessages = [...cleanPrev, aiMessage];
         const firstUser = finalMessages.find((m) => m.role === "User_Message");
         const title = generateChatTitle(firstUser?.content);
         onSaveChatSession({
@@ -593,9 +643,7 @@ function ChatView({
           messages: finalMessages,
           contextMessages: updatedMessages,
         });
-
-        return finalMessages;
-      });
+      }
     } catch (err) {
       if (err.name === "AbortError" || axios.isCancel(err)) {
         return;
@@ -1004,22 +1052,38 @@ export default function App() {
   };
 
   const handleSelectChat = async (chat) => {
-    setCurrentChatId(chat.id);
-    setMessages(chat.messages || []);
-    if (chat.contextMessages) {
-      localStorage.setItem("messages", JSON.stringify(chat.contextMessages));
+    // Re-read from storage in case a background streaming response has
+    // updated this session since the sidebar was last rendered.
+    const freshChats = getRecentChats();
+    const freshChat = freshChats.find((c) => c.id === chat.id) || chat;
+    setRecentChats(freshChats);
+
+    setCurrentChatId(freshChat.id);
+    setMessages(freshChat.messages || []);
+    if (freshChat.contextMessages) {
+      localStorage.setItem("messages", JSON.stringify(freshChat.contextMessages));
     }
-    if (chat.source) {
-      await syncActiveSourceWithServer(chat.source);
+    if (freshChat.source) {
+      await syncActiveSourceWithServer(freshChat.source);
     } else {
       await syncActiveSourceWithServer(activeSource);
     }
-    if (chat.modelId) {
-      setSelectedModel(chat.modelId);
-      localStorage.setItem("selectedModel", chat.modelId);
+    if (freshChat.modelId) {
+      setSelectedModel(freshChat.modelId);
+      localStorage.setItem("selectedModel", freshChat.modelId);
     }
     setPage("agent");
   };
+
+  // Re-fetch recent chats from storage periodically to pick up
+  // any sessions saved by a background streaming response
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const latest = getRecentChats();
+      setRecentChats(latest);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleDeleteChat = (chatId) => {
     const updated = deleteChatSession(chatId);

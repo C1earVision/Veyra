@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import {
   ResponsiveContainer,
@@ -33,11 +33,19 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   RotateCcw,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  FileText,
+  Presentation,
 } from "lucide-react";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import * as XLSX from "xlsx";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
+import PptxGenJS from "pptxgenjs";
 
 /* ─── Fix Leaflet default marker icons (bundler breaks asset paths) ─── */
 delete L.Icon.Default.prototype._getIconUrl;
@@ -932,30 +940,270 @@ function SliderChart({ chart, height = 290 }) {
 
 /* ─── Chart Card ─── */
 function ChartCard({ chart, onExpand, expanded = false }) {
-  const type = (chart.type || "bar").toLowerCase();
+  const rawType = (chart.type || "bar").toLowerCase();
+  const type = rawType === "distribution" ? "donut" : rawType;
   const [view, setView] = useState(type === "table" ? "table" : "chart");
-  const xKey = chart.xAxisKey || "name";
-  const data = Array.isArray(chart.data) ? chart.data : [];
+  const [sortCol, setSortCol] = useState(null);
+  const [sortDir, setSortDir] = useState("asc"); // "asc" | "desc"
+  const rawData = Array.isArray(chart.data) ? chart.data : [];
 
-  const dataKeys =
-    Array.isArray(chart.dataKeys) && chart.dataKeys.length > 0
-      ? chart.dataKeys
-      : [{ key: "value", name: chart.metricName || "Value", color: COLORS[0] }];
+  // Available column keys in the raw data
+  const availableKeys = useMemo(() => {
+    if (!rawData || rawData.length === 0) return [];
+    return Object.keys(rawData[0] || {});
+  }, [rawData]);
+
+  // Identify numeric vs text columns
+  const { numericKeys, textKeys } = useMemo(() => {
+    const nums = [];
+    const texts = [];
+    availableKeys.forEach((k) => {
+      const sample = rawData.find((r) => r && r[k] !== null && r[k] !== undefined);
+      if (!sample) return;
+      const val = sample[k];
+      if (typeof val === "number") {
+        nums.push(k);
+      } else if (
+        typeof val === "string" &&
+        val.trim() !== "" &&
+        /^[\$€£¥]?\s*[\d,]+\.?\d*\s*%?$/.test(val.trim())
+      ) {
+        nums.push(k);
+      } else {
+        texts.push(k);
+      }
+    });
+    return { numericKeys: nums, textKeys: texts };
+  }, [availableKeys, rawData]);
+
+  // Auto-resolve xKey (categorical dimension / label column)
+  const xKey = useMemo(() => {
+    const rawX = chart.xAxisKey;
+    if (rawX && availableKeys.includes(rawX)) {
+      // If rawX is a number and dataKey is a string, they were swapped
+      const rawDataKey = chart.dataKeys?.[0]?.key;
+      if (numericKeys.includes(rawX) && rawDataKey && textKeys.includes(rawDataKey)) {
+        return rawDataKey;
+      }
+      return rawX;
+    }
+    if (rawX) {
+      const fuzzy = availableKeys.find(
+        (k) =>
+          k.toLowerCase() === rawX.toLowerCase() ||
+          k.toLowerCase().replace(/s$/, "") === rawX.toLowerCase().replace(/s$/, "")
+      );
+      if (fuzzy) return fuzzy;
+    }
+    if (textKeys.length > 0) return textKeys[0];
+    return availableKeys[0] || "name";
+  }, [chart.xAxisKey, chart.dataKeys, availableKeys, numericKeys, textKeys]);
+
+  // Auto-resolve dataKeys (metric columns)
+  const dataKeys = useMemo(() => {
+    const rawDks =
+      Array.isArray(chart.dataKeys) && chart.dataKeys.length > 0 ? chart.dataKeys : [];
+    const valid = [];
+
+    rawDks.forEach((dk, i) => {
+      let k = dk.key;
+      if (k === xKey && numericKeys.includes(chart.xAxisKey)) {
+        k = chart.xAxisKey;
+      }
+      if (availableKeys.includes(k)) {
+        valid.push({
+          key: k,
+          name: dk.name || k.replace(/_/g, " "),
+          color: dk.color || COLORS[i % COLORS.length],
+        });
+        return;
+      }
+      const fuzzy = availableKeys.find(
+        (ak) =>
+          ak.toLowerCase() === k.toLowerCase() ||
+          ak.toLowerCase().replace(/s$/, "") === k.toLowerCase().replace(/s$/, "")
+      );
+      if (fuzzy) {
+        valid.push({
+          key: fuzzy,
+          name: dk.name || fuzzy.replace(/_/g, " "),
+          color: dk.color || COLORS[i % COLORS.length],
+        });
+      }
+    });
+
+    if (valid.length > 0) return valid;
+
+    const cand = numericKeys.filter((k) => k !== xKey);
+    if (cand.length > 0) {
+      return cand.map((k, i) => ({
+        key: k,
+        name: k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+        color: COLORS[i % COLORS.length],
+      }));
+    }
+
+    const fallback = availableKeys.find((k) => k !== xKey) || "value";
+    return [{ key: fallback, name: chart.metricName || "Value", color: COLORS[0] }];
+  }, [chart.dataKeys, chart.xAxisKey, chart.metricName, xKey, availableKeys, numericKeys]);
+
+  // Sanitize data: cast string-formatted numbers into genuine floats
+  const data = useMemo(() => {
+    if (!rawData || rawData.length === 0) return [];
+    const metricKeys = dataKeys.map((dk) => dk.key);
+
+    return rawData.map((row) => {
+      const copy = { ...row };
+      if (copy[xKey] === undefined || copy[xKey] === null) {
+        copy[xKey] = "—";
+      } else {
+        copy[xKey] = String(copy[xKey]);
+      }
+      metricKeys.forEach((mk) => {
+        const val = copy[mk];
+        if (typeof val === "number") {
+          copy[mk] = isNaN(val) ? 0 : val;
+        } else if (typeof val === "string") {
+          const num = parseFloat(val.replace(/[^0-9.-]/g, ""));
+          copy[mk] = isNaN(num) ? 0 : num;
+        } else {
+          copy[mk] = 0;
+        }
+      });
+      return copy;
+    });
+  }, [rawData, xKey, dataKeys]);
+
+  // Clean data specifically for Pie / Donut
+  const cleanPieData = useMemo(() => {
+    if (type !== "pie" && type !== "donut") return data;
+    const mKey = dataKeys[0]?.key;
+    if (!mKey) return data;
+
+    return data
+      .filter((r) => r && r[mKey] > 0)
+      .map((r) => ({
+        ...r,
+        name: formatCellLabel(r[xKey], xKey),
+        value: r[mKey],
+      }));
+  }, [data, type, dataKeys, xKey]);
 
   const fullTableColumns =
     type === "table" && data.length > 0 ? Object.keys(data[0]) : null;
 
+  const columns = useMemo(() => {
+    if (fullTableColumns && fullTableColumns.length > 0) return fullTableColumns;
+    if (data.length > 0) return Object.keys(data[0]);
+    return [xKey, ...dataKeys.map((dk) => dk.key)];
+  }, [fullTableColumns, data, xKey, dataKeys]);
+
+  const colNameMap = useMemo(() => {
+    const map = {};
+    if (Array.isArray(chart.dataKeys)) {
+      chart.dataKeys.forEach((dk) => {
+        if (dk.key) map[dk.key] = dk.name || dk.key;
+      });
+    }
+    return map;
+  }, [chart.dataKeys]);
+
+  const formatHeader = (col) => {
+    if (colNameMap[col]) return colNameMap[col];
+    if (col === xKey && chart.xAxisLabel) return chart.xAxisLabel;
+    return col
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  };
+
+  const isColNumeric = useMemo(() => {
+    const map = {};
+    columns.forEach((col) => {
+      const sample = data.find((r) => r && r[col] !== null && r[col] !== undefined);
+      if (!sample) {
+        map[col] = false;
+        return;
+      }
+      const val = sample[col];
+      if (typeof val === "number") {
+        map[col] = true;
+      } else if (typeof val === "string") {
+        map[col] = /^[\$€£¥]?\s*[\d,]+\.?\d*\s*%?$/.test(val.trim());
+      } else {
+        map[col] = false;
+      }
+    });
+    return map;
+  }, [columns, data]);
+
+  const handleSort = (col) => {
+    if (sortCol === col) {
+      if (sortDir === "asc") setSortDir("desc");
+      else {
+        setSortCol(null);
+        setSortDir("asc");
+      }
+    } else {
+      setSortCol(col);
+      setSortDir("asc");
+    }
+  };
+
+  const sortedData = useMemo(() => {
+    if (!sortCol) return data;
+    return [...data].sort((a, b) => {
+      const va = a[sortCol];
+      const vb = b[sortCol];
+      if (va === null || va === undefined) return 1;
+      if (vb === null || vb === undefined) return -1;
+      if (typeof va === "number" && typeof vb === "number") {
+        return sortDir === "asc" ? va - vb : vb - va;
+      }
+      return sortDir === "asc"
+        ? String(va).localeCompare(String(vb), undefined, { numeric: true })
+        : String(vb).localeCompare(String(va), undefined, { numeric: true });
+    });
+  }, [data, sortCol, sortDir]);
+
+  const renderCellContent = (val, col) => {
+    if (val === null || val === undefined) {
+      return <span className="text-[#64748B] italic">—</span>;
+    }
+    if (typeof val === "boolean") {
+      return (
+        <span
+          className={`inline-block px-2 py-0.5 rounded text-[10.5px] font-semibold ${
+            val
+              ? "bg-[#10B981]/15 text-[#34D399] border border-[#10B981]/25"
+              : "bg-[#EF4444]/15 text-[#F87171] border border-[#EF4444]/25"
+          }`}
+        >
+          {val ? "Yes" : "No"}
+        </span>
+      );
+    }
+    if (typeof val === "number") {
+      return val.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+    return formatCellLabel(val, col);
+  };
+
   const h = expanded ? 420 : (type === "map" ? 310 : 290);
 
   return (
-    <div className="group flex flex-col h-full justify-between">
+    <div className={`group flex flex-col ${view === "table" ? "h-auto" : "h-full justify-between"}`}>
       {/* Header */}
-      <div className="flex items-start justify-between mb-2 gap-2">
+      <div className="flex items-start justify-between mb-2.5 gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <h4 className="text-[14px] font-semibold text-[#F8FAFC] tracking-tight leading-snug">
               {chart.title}
             </h4>
+            {type === "table" && (
+              <span className="text-[9.5px] font-mono text-[#34D399] bg-[#10B981]/10 border border-[#10B981]/25 px-1.5 py-0.5 rounded font-medium">
+                Table
+              </span>
+            )}
             {chart.isFiltered && (
               <span
                 className="text-[9.5px] font-mono text-[#10B981] bg-[#10B981]/10 border border-[#10B981]/20 px-1.5 py-0.5 rounded font-medium"
@@ -973,21 +1221,21 @@ function ChartCard({ chart, onExpand, expanded = false }) {
         </div>
         <div className="flex items-center gap-1 shrink-0 ml-2">
           {type !== "table" && (
-          <button
-            onClick={() => setView((v) => (v === "chart" ? "table" : "chart"))}
-            className={`p-1.5 rounded-md transition-colors ${
-              view === "table"
-                ? "bg-[#1E2534] text-[#10B981]"
-                : "text-[#8C93A0] hover:text-[#F1F3F5] hover:bg-[#1E2534]/50"
-            }`}
-            title={view === "chart" ? "View data table" : "View chart"}
-          >
-            {view === "chart" ? (
-              <TableIcon size={14} />
-            ) : (
-              <BarChart2 size={14} />
-            )}
-          </button>
+            <button
+              onClick={() => setView((v) => (v === "chart" ? "table" : "chart"))}
+              className={`p-1.5 rounded-md transition-colors ${
+                view === "table"
+                  ? "bg-[#1E2534] text-[#10B981]"
+                  : "text-[#8C93A0] hover:text-[#F1F3F5] hover:bg-[#1E2534]/50"
+              }`}
+              title={view === "chart" ? "View data table" : "View chart"}
+            >
+              {view === "chart" ? (
+                <TableIcon size={14} />
+              ) : (
+                <BarChart2 size={14} />
+              )}
+            </button>
           )}
           {onExpand && (
             <button
@@ -1001,92 +1249,127 @@ function ChartCard({ chart, onExpand, expanded = false }) {
         </div>
       </div>
 
-      {/* Canvas */}
-      <div style={{ height: `${h}px` }} className="w-full mt-1">
-        {data.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-[12px] text-[#64748B]">
-            No data available
-          </div>
-        ) : view === "table" ? (
-          /* ── Data Table ── */
-          <div className="h-full overflow-auto rounded border border-[#202734] bg-[#10131B]">
-            <table className="w-full text-left text-[11px] border-collapse">
-              <thead className="bg-[#161B24] text-[#8C93A0] sticky top-0 z-10 border-b border-[#202734]">
-                <tr>
-                  <th className="px-2.5 py-1.5 font-semibold uppercase text-[9.5px] tracking-wider w-8">#</th>
-                  {fullTableColumns ? (
-                    fullTableColumns.map((col) => (
-                      <th
-                        key={col}
-                        className="px-2.5 py-1.5 font-semibold uppercase text-[9.5px] tracking-wider"
-                      >
-                        {col.replace(/_/g, " ")}
+      {/* Content Area */}
+      {view === "table" ? (
+        /* ── Data Table (Styled matching RAG Markdown Table) ── */
+        <div className="w-full mt-2">
+          {data.length === 0 ? (
+            <div className="py-12 flex items-center justify-center text-[12px] text-[#64748B] rounded-lg border border-[#272B35] bg-[#10131B]">
+              No data available
+            </div>
+          ) : (
+            <div className="w-full rounded-lg border border-[#272B35] bg-[#10131B] shadow-sm overflow-hidden flex flex-col">
+              <div
+                className={`w-full overflow-auto ${
+                  expanded ? "max-h-[620px]" : "max-h-[460px]"
+                } scrollbar-thin scrollbar-thumb-[#272B35] scrollbar-track-transparent`}
+              >
+                <table className="w-full min-w-[500px] text-[13px] border-collapse text-left">
+                  <thead className="bg-[#161922] sticky top-0 z-10 border-b border-[#272B35] text-[11.5px] uppercase font-semibold tracking-wider text-[#9CA3AF]">
+                    <tr>
+                      <th className="px-3.5 py-3 font-semibold text-[#6B7280] text-center w-12 select-none">
+                        #
                       </th>
-                    ))
-                  ) : (
-                    <>
-                      <th className="px-2.5 py-1.5 font-semibold uppercase text-[9.5px] tracking-wider">{xKey}</th>
-                      {dataKeys.map((dk) => (
-                        <th
-                          key={dk.key}
-                          className="px-2.5 py-1.5 font-semibold uppercase text-[9.5px] tracking-wider text-right"
-                        >
-                          {dk.name || dk.key}
-                        </th>
-                      ))}
-                    </>
-                  )}
-                </tr>
-              </thead>
-              <tbody className="text-[#CBD5E1] divide-y divide-[#1A202C]">
-                {data.map((row, ri) => (
-                  <tr key={ri} className="hover:bg-[#161B24]/70 transition-colors">
-                    <td className="px-2.5 py-1.5 text-[#64748B] font-mono text-[10px]">
-                      {ri + 1}
-                    </td>
-                    {fullTableColumns ? (
-                      fullTableColumns.map((col) => (
-                        <td
-                          key={col}
-                          className="px-2.5 py-1.5 font-mono text-[#F1F3F5] max-w-[200px] truncate"
-                          title={String(row[col] ?? "")}
-                        >
-                          {typeof row[col] === "number"
-                            ? row[col].toLocaleString(undefined, {
-                                maximumFractionDigits: 2,
-                              })
-                            : formatCellLabel(row[col], col)}
-                        </td>
-                      ))
-                    ) : (
-                      <>
-                        <td className="px-2.5 py-1.5 text-[#E2E8F0]">
-                          {formatCellLabel(row[xKey], xKey)}
-                        </td>
-                        {dataKeys.map((dk) => (
-                          <td
-                            key={dk.key}
-                            className="px-2.5 py-1.5 text-right font-mono text-[#F1F3F5]"
+                      {columns.map((col) => {
+                        const isNum = isColNumeric[col];
+                        const isSorted = sortCol === col;
+                        return (
+                          <th
+                            key={col}
+                            onClick={() => handleSort(col)}
+                            className={`px-4 py-3 font-semibold whitespace-nowrap text-[#9CA3AF] cursor-pointer hover:text-[#F3F4F6] hover:bg-[#1E2534]/60 select-none transition-colors group/th ${
+                              isNum ? "text-right" : "text-left"
+                            }`}
+                            title="Click to sort"
                           >
-                            {typeof row[dk.key] === "number"
-                              ? row[dk.key].toLocaleString(undefined, {
-                                  maximumFractionDigits: 2,
-                                })
-                              : String(row[dk.key] ?? "")}
-                          </td>
-                        ))}
-                      </>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : type === "table" ? (
-          <div className="h-full flex items-center justify-center text-[12px] text-[#64748B]">
-            Table view — switch to table mode
-          </div>
-        ) : type === "line" ? (
+                            <div
+                              className={`inline-flex items-center gap-1.5 ${
+                                isNum ? "flex-row-reverse" : "flex-row"
+                              }`}
+                            >
+                              <span>{formatHeader(col)}</span>
+                              {isSorted ? (
+                                sortDir === "asc" ? (
+                                  <ArrowUp size={12} className="text-[#10B981] shrink-0" />
+                                ) : (
+                                  <ArrowDown size={12} className="text-[#10B981] shrink-0" />
+                                )
+                              ) : (
+                                <ArrowUpDown
+                                  size={11}
+                                  className="text-[#64748B] opacity-0 group-hover/th:opacity-75 transition-opacity shrink-0"
+                                />
+                              )}
+                            </div>
+                          </th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1E2230] text-[#D1D5DB]">
+                    {sortedData.map((row, ri) => (
+                      <tr key={ri} className="hover:bg-[#1A1E29]/70 transition-colors">
+                        <td className="px-3.5 py-2.5 text-center font-mono text-[11px] text-[#6B7280] select-none">
+                          {ri + 1}
+                        </td>
+                        {columns.map((col) => {
+                          const isNum = isColNumeric[col];
+                          const val = row[col];
+                          return (
+                            <td
+                              key={col}
+                              className={`px-4 py-2.5 whitespace-nowrap ${
+                                isNum
+                                  ? "text-right tabular-nums font-mono text-[12.5px] text-[#F3F4F6]"
+                                  : "text-left text-[#D1D5DB]"
+                              }`}
+                              title={val !== null && val !== undefined ? String(val) : ""}
+                            >
+                              {renderCellContent(val, col)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {/* Footer status bar */}
+              <div className="flex items-center justify-between px-4 py-2 text-[11px] text-[#8C93A0] font-mono border-t border-[#1E2230] bg-[#141822]">
+                <span>{sortedData.length} records</span>
+                <div className="flex items-center gap-3">
+                  {sortedData.length > 8 && (
+                    <span className="text-[10.5px] text-[#64748B]">Scroll to view all</span>
+                  )}
+                  {sortCol && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSortCol(null);
+                        setSortDir("asc");
+                      }}
+                      className="text-[#10B981] hover:underline cursor-pointer transition-colors"
+                    >
+                      Reset sort ({formatHeader(sortCol)} {sortDir.toUpperCase()})
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* ── Standard Chart Canvas ── */
+        <div style={{ height: `${h}px` }} className="w-full mt-1">
+          {data.length === 0 ? (
+            <div className="h-full flex items-center justify-center text-[12px] text-[#64748B]">
+              No data available
+            </div>
+          ) : type === "table" ? (
+            <div className="h-full flex items-center justify-center text-[12px] text-[#64748B]">
+              Table view
+            </div>
+          ) : type === "line" ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={MARGIN}>
               <CartesianGrid {...GRID_PROPS} />
@@ -1152,23 +1435,23 @@ function ChartCard({ chart, onExpand, expanded = false }) {
             </AreaChart>
           </ResponsiveContainer>
         ) : type === "pie" || type === "donut" ? (
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
             <PieChart>
               <Tooltip content={<ChartTooltip />} />
               <Legend {...LEGEND_PROPS} />
               <Pie
-                data={data}
-                dataKey={dataKeys[0]?.key || "value"}
-                nameKey={xKey}
+                data={cleanPieData}
+                dataKey="value"
+                nameKey="name"
                 cx="50%"
-                cy="50%"
-                innerRadius={type === "donut" ? 52 : 0}
-                outerRadius={78}
+                cy="44%"
+                innerRadius={type === "donut" ? "48%" : 0}
+                outerRadius="75%"
                 paddingAngle={2}
                 stroke="#151921"
                 strokeWidth={2}
               >
-                {data.map((_, index) => (
+                {cleanPieData.map((_, index) => (
                   <Cell
                     key={`c-${index}`}
                     fill={COLORS[index % COLORS.length]}
@@ -1204,8 +1487,9 @@ function ChartCard({ chart, onExpand, expanded = false }) {
           </ResponsiveContainer>
         )}
       </div>
-    </div>
-  );
+    )}
+  </div>
+);
 }
 
 /* ─── Chart Expand Modal ─── */
@@ -1349,81 +1633,436 @@ function exportPageToXlsx(page, reportTitle) {
 }
 
 function exportReportToXlsx(report, activePage) {
-  if (!report || !Array.isArray(report.pages) || report.pages.length === 0) {
-    if (activePage) exportPageToXlsx(activePage, report?.title);
-    return;
-  }
+  if (!report) return;
 
   const wb = XLSX.utils.book_new();
   const usedNames = new Set();
-  const isMultiPage = report.pages.length > 1;
+  const isMultiPage = Array.isArray(report.pages) && report.pages.length > 1;
+  const page = activePage || report.pages?.[0] || { charts: [] };
+  const charts = Array.isArray(page.charts) ? page.charts : [];
+  const kpis = Array.isArray(page.kpis) ? page.kpis : [];
+  const insights = Array.isArray(page.insights) ? page.insights : [];
 
-  report.pages.forEach((page, pIdx) => {
-    const prefix = isMultiPage ? `P${pIdx + 1} ` : "";
+  /* ════════════════════════════════════════════════════════════════
+     1. FRONT SHEET: EXECUTIVE SUMMARY & DIRECTORY (Recommended layout)
+     ════════════════════════════════════════════════════════════════ */
+  const overviewRows = [
+    ["EXECUTIVE BI DASHBOARD REPORT", ""],
+    ["Report Title", report.title || "Business Intelligence Dashboard"],
+    ["Subtitle / Scope", report.subtitle || page.summary || "Executive Overview"],
+    ["Active View / Tab", page.name || "Overview"],
+    ["Export Date", new Date().toLocaleString()],
+    ["Pages Available", (report.pages || []).map((p) => p.name).join(" | ") || "Single Page"],
+    [],
+  ];
 
-    if (Array.isArray(page.kpis) && page.kpis.length > 0) {
-      const kpiRows = page.kpis.map((k) => ({
-        Metric: k.label,
-        Value: k.value,
-        Change: k.change || "",
-        Description: k.description || "",
-      }));
-      let kpiSheetName = `${prefix}KPIs`.slice(0, 28);
-      let kpiSuffix = 1;
-      while (usedNames.has(kpiSheetName)) {
-        kpiSheetName = `${prefix}KPIs_${kpiSuffix++}`.slice(0, 31);
-      }
-      usedNames.add(kpiSheetName);
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(kpiRows), kpiSheetName);
-    }
+  // Key Strategic Findings
+  if (insights.length > 0) {
+    overviewRows.push(["KEY STRATEGIC FINDINGS & BRIEFING", ""]);
+    insights.forEach((ins, idx) => {
+      overviewRows.push([`Takeaway ${idx + 1}`, ins]);
+    });
+    overviewRows.push([]);
+  }
 
-    const pageCharts = (page.id === activePage?.id && Array.isArray(activePage.charts))
-      ? activePage.charts
-      : (Array.isArray(page.charts) ? page.charts : []);
+  // KPIs Summary Table
+  if (kpis.length > 0) {
+    overviewRows.push(["KEY PERFORMANCE INDICATORS (KPIs)", "", "", ""]);
+    overviewRows.push(["Metric Label", "Primary Value", "Trajectory / Change", "Target / Context"]);
+    kpis.forEach((k) => {
+      overviewRows.push([
+        k.label || "KPI",
+        typeof k.value === "number" ? k.value : String(k.value ?? "—"),
+        k.change || "—",
+        k.description || "—",
+      ]);
+    });
+    overviewRows.push([]);
+  }
 
-    pageCharts.forEach((chart, cIdx) => {
+  // Dashboard Data Sheets Directory
+  if (charts.length > 0) {
+    overviewRows.push(["DASHBOARD VISUALIZATION & DATA DIRECTORY", "", "", "", ""]);
+    overviewRows.push(["#", "Visualization Title", "Type", "Primary Dimension", "Data Tab Name"]);
+    charts.forEach((c, idx) => {
+      const cleanTitle = (c.title || `Chart ${idx + 1}`).replace(/[\\\/*?:\[\]]/g, "");
+      const tabName = `Data - ${cleanTitle}`.slice(0, 31);
+      overviewRows.push([
+        idx + 1,
+        c.title || `Chart ${idx + 1}`,
+        (c.type || "bar").toUpperCase(),
+        c.xAxisKey || "Category / Date",
+        `'${tabName}'`,
+      ]);
+    });
+  }
+
+  const overviewWs = XLSX.utils.aoa_to_sheet(overviewRows);
+  overviewWs["!cols"] = [
+    { wch: 32 },
+    { wch: 60 },
+    { wch: 22 },
+    { wch: 35 },
+    { wch: 30 },
+  ];
+  XLSX.utils.book_append_sheet(wb, overviewWs, "Executive Summary");
+  usedNames.add("Executive Summary");
+
+  /* ════════════════════════════════════════════════════════════════
+     2. DEDICATED DATA SHEETS FOR EVERY CHART & TABLE
+     ════════════════════════════════════════════════════════════════ */
+  const allPages = isMultiPage ? report.pages : [page];
+
+  allPages.forEach((p, pIdx) => {
+    const pagePrefix = isMultiPage ? `P${pIdx + 1} ` : "";
+    const pCharts = p.id === activePage?.id ? charts : (Array.isArray(p.charts) ? p.charts : []);
+
+    pCharts.forEach((chart, cIdx) => {
       const xKey = chart.xAxisKey || "name";
-      const dks =
-        Array.isArray(chart.dataKeys) && chart.dataKeys.length > 0
-          ? chart.dataKeys
-          : [{ key: "value", name: "Value" }];
+      const dks = Array.isArray(chart.dataKeys) && chart.dataKeys.length > 0
+        ? chart.dataKeys
+        : [{ key: "value", name: chart.metricName || "Value" }];
+
+      const isTable = (chart.type || "").toLowerCase() === "table";
+      const fullCols = isTable && chart.data?.length > 0 ? Object.keys(chart.data[0]) : null;
 
       const rows = (Array.isArray(chart.data) ? chart.data : []).map((row) => {
         const obj = {};
-        obj[xKey] = row[xKey] ?? "";
-        dks.forEach((dk) => {
-          obj[dk.name || dk.key] = row[dk.key] ?? "";
-        });
-        /* Include map-specific columns if present */
-        if (chart.type === "map") {
-          const coords = resolveRowCoordinates(row, chart.markerLabel || xKey, chart.latKey, chart.lngKey);
-          if (coords) {
-            obj["Latitude"] = coords[0];
-            obj["Longitude"] = coords[1];
-          }
+        if (fullCols) {
+          fullCols.forEach((col) => {
+            const cleanCol = col.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+            obj[cleanCol] = row[col] ?? "";
+          });
         } else {
-          if (chart.latKey && row[chart.latKey] !== undefined) obj["Latitude"] = row[chart.latKey];
-          if (chart.lngKey && row[chart.lngKey] !== undefined) obj["Longitude"] = row[chart.lngKey];
+          obj[chart.xAxisLabel || xKey] = row[xKey] ?? "";
+          dks.forEach((dk) => {
+            obj[dk.name || dk.key] = row[dk.key] ?? "";
+          });
+          if (chart.type === "map") {
+            const coords = resolveRowCoordinates(row, chart.markerLabel || xKey, chart.latKey, chart.lngKey);
+            if (coords) {
+              obj["Latitude"] = coords[0];
+              obj["Longitude"] = coords[1];
+            }
+          }
         }
         return obj;
       });
 
+      if (rows.length === 0) return;
+
       const ws = XLSX.utils.json_to_sheet(rows);
+
+      // Auto-compute column widths to prevent ### truncation
+      const colKeys = Object.keys(rows[0] || {});
+      ws["!cols"] = colKeys.map((k) => {
+        const maxLen = Math.max(
+          k.length,
+          ...rows.slice(0, 40).map((r) => String(r[k] ?? "").length)
+        );
+        return { wch: Math.min(Math.max(maxLen + 3, 12), 48) };
+      });
+
       const cleanTitle = (chart.title || `Chart ${cIdx + 1}`).replace(/[\\\/*?:\[\]]/g, "");
-      let sheetName = `${prefix}${cleanTitle}`.slice(0, 28);
+      let sheetName = `${pagePrefix}Data - ${cleanTitle}`.slice(0, 31);
       let suffix = 1;
       while (usedNames.has(sheetName)) {
-        sheetName = `${prefix}${cleanTitle}`.slice(0, 24) + ` (${suffix++})`;
+        sheetName = `${pagePrefix}Data - ${cleanTitle}`.slice(0, 26) + ` (${suffix++})`;
       }
       usedNames.add(sheetName);
       XLSX.utils.book_append_sheet(wb, ws, sheetName);
     });
   });
 
-  const safeName = (report.title || activePage?.name || "bi_report")
+  const safeName = (report.title || page.name || "bi_report")
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "_");
-  XLSX.writeFile(wb, `${safeName}_powerbi.xlsx`);
+  XLSX.writeFile(wb, `${safeName}_report.xlsx`);
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Shared html2canvas capture utility for PDF & PPTX exports.
+   Uses the correct (clonedDoc, clonedElement) signature.
+   ════════════════════════════════════════════════════════════════ */
+async function captureElementToCanvas(el) {
+  // Hide interactive buttons and tooltips for a clean capture
+  const buttons = el.querySelectorAll("button");
+  const tooltips = el.querySelectorAll(".recharts-tooltip-wrapper");
+  buttons.forEach((btn) => { btn.dataset._origDisplay = btn.style.display; btn.style.display = "none"; });
+  tooltips.forEach((tip) => { tip.dataset._origDisplay = tip.style.display; tip.style.display = "none"; });
+
+  // Expand scrollable tables
+  const scrollables = el.querySelectorAll(".overflow-auto, .overflow-y-auto, [class*='max-h-']");
+  scrollables.forEach((s) => {
+    s.dataset._origMaxH = s.style.maxHeight;
+    s.dataset._origOverflow = s.style.overflow;
+    s.style.maxHeight = "none";
+    s.style.overflow = "visible";
+  });
+
+  const canvas = await html2canvas(el, {
+    backgroundColor: "#0F1218",
+    scale: 2,
+    useCORS: true,
+    allowTaint: true,
+    logging: false,
+    // Correct html2canvas v1.x signature: (clonedDocument, clonedElement)
+    onclone: (_clonedDoc, clonedEl) => {
+      // Sync SVG dimensions from the live DOM into the clone
+      const origSvgs = el.querySelectorAll("svg");
+      const clonedSvgs = clonedEl.querySelectorAll("svg");
+      origSvgs.forEach((orig, i) => {
+        const cloned = clonedSvgs[i];
+        if (cloned) {
+          const rect = orig.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            const w = Math.round(rect.width);
+            const h = Math.round(rect.height);
+            cloned.setAttribute("width", String(w));
+            cloned.setAttribute("height", String(h));
+            cloned.style.width = `${w}px`;
+            cloned.style.height = `${h}px`;
+            if (!cloned.getAttribute("viewBox")) {
+              cloned.setAttribute("viewBox", `0 0 ${w} ${h}`);
+            }
+          }
+        }
+      });
+      // Sync Recharts wrapper dimensions
+      const origWrappers = el.querySelectorAll(".recharts-wrapper, .recharts-responsive-container");
+      const clonedWrappers = clonedEl.querySelectorAll(".recharts-wrapper, .recharts-responsive-container");
+      origWrappers.forEach((orig, i) => {
+        const cloned = clonedWrappers[i];
+        if (cloned) {
+          const rect = orig.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            cloned.style.width = `${Math.round(rect.width)}px`;
+            cloned.style.height = `${Math.round(rect.height)}px`;
+            cloned.style.minHeight = `${Math.round(rect.height)}px`;
+          }
+        }
+      });
+      // Sync canvas elements (Leaflet map tiles)
+      const origCanvases = el.querySelectorAll("canvas");
+      const clonedCanvases = clonedEl.querySelectorAll("canvas");
+      origCanvases.forEach((orig, i) => {
+        const cloned = clonedCanvases[i];
+        if (cloned && orig.width && orig.height) {
+          cloned.width = orig.width;
+          cloned.height = orig.height;
+          try { cloned.getContext("2d")?.drawImage(orig, 0, 0); } catch { /* cross-origin */ }
+        }
+      });
+    },
+  });
+
+  // Restore original styles
+  buttons.forEach((btn) => { btn.style.display = btn.dataset._origDisplay || ""; delete btn.dataset._origDisplay; });
+  tooltips.forEach((tip) => { tip.style.display = tip.dataset._origDisplay || ""; delete tip.dataset._origDisplay; });
+  scrollables.forEach((s) => {
+    s.style.maxHeight = s.dataset._origMaxH || "";
+    s.style.overflow = s.dataset._origOverflow || "";
+    delete s.dataset._origMaxH;
+    delete s.dataset._origOverflow;
+  });
+
+  return canvas;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   High-Fidelity PDF Export — html2canvas + jsPDF
+   Captures ALL dashboard pages with chart data, properly scaled
+   so each dashboard page fits exactly one PDF page (A4 landscape).
+   ════════════════════════════════════════════════════════════════ */
+async function exportReportToPdf(report, dashboardElement, currentPageIdx, setPageIdx, onProgress) {
+  if (!report || !dashboardElement) return;
+
+  const reportTitle = report.title || "Business Intelligence Report";
+  const pages = report.pages || [];
+  if (pages.length === 0) return;
+
+  const origPageIdx = currentPageIdx;
+
+  // A4 landscape in points: 841.89 x 595.28
+  const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  const pdfW = pdf.internal.pageSize.getWidth();
+  const pdfH = pdf.internal.pageSize.getHeight();
+  const margin = 24;
+  const usableW = pdfW - margin * 2;
+  const usableH = pdfH - margin * 2 - 32;
+
+  function addPageChrome(pageIdx, pageName, totalPages) {
+    pdf.setFontSize(8);
+    pdf.setTextColor(16, 185, 129);
+    pdf.text("KADASH BI \u2022 EXECUTIVE REPORT", margin, margin - 6);
+    pdf.setTextColor(100, 116, 139);
+    pdf.setFontSize(7.5);
+    const headerRight = `${pageName}  \u2022  ${new Date().toLocaleDateString()}  \u2022  Confidential`;
+    const rightW = pdf.getTextWidth(headerRight);
+    pdf.text(headerRight, pdfW - margin - rightW, margin - 6);
+    pdf.setFontSize(7);
+    pdf.setTextColor(100, 116, 139);
+    pdf.text("Generated by Kadash Enterprise Agent", margin, pdfH - 10);
+    const footerRight = `Page ${pageIdx + 1} of ${totalPages}  \u2022  ${reportTitle}`;
+    const footerRW = pdf.getTextWidth(footerRight);
+    pdf.text(footerRight, pdfW - margin - footerRW, pdfH - 10);
+  }
+
+  for (let pIdx = 0; pIdx < pages.length; pIdx++) {
+    if (pIdx > 0) pdf.addPage();
+
+    const pageName = pages[pIdx]?.name || `Page ${pIdx + 1}`;
+    onProgress?.(`Capturing page ${pIdx + 1} of ${pages.length}: ${pageName}...`);
+
+    // Switch to this page and wait for charts to render
+    if (pages.length > 1) {
+      setPageIdx(pIdx);
+      await new Promise((r) => setTimeout(r, 900));
+    }
+
+    try {
+      const canvas = await captureElementToCanvas(dashboardElement);
+      const imgData = canvas.toDataURL("image/png");
+      const imgW = canvas.width;
+      const imgH = canvas.height;
+
+      const scaleX = usableW / imgW;
+      const scaleY = usableH / imgH;
+      const scale = Math.min(scaleX, scaleY);
+      const drawW = imgW * scale;
+      const drawH = imgH * scale;
+      const offsetX = margin + (usableW - drawW) / 2;
+      const offsetY = margin + 12 + (usableH - drawH) / 2;
+
+      pdf.setFillColor(15, 18, 24);
+      pdf.rect(0, 0, pdfW, pdfH, "F");
+      pdf.addImage(imgData, "PNG", offsetX, offsetY, drawW, drawH);
+      addPageChrome(pIdx, pageName, pages.length);
+    } catch (err) {
+      console.warn(`PDF capture failed for page ${pIdx}:`, err);
+      pdf.setFillColor(15, 18, 24);
+      pdf.rect(0, 0, pdfW, pdfH, "F");
+      pdf.setTextColor(148, 163, 184);
+      pdf.setFontSize(14);
+      pdf.text(`Page "${pageName}" could not be captured`, pdfW / 2, pdfH / 2, { align: "center" });
+      addPageChrome(pIdx, pageName, pages.length);
+    }
+  }
+
+  // Restore original page
+  if (pages.length > 1) setPageIdx(origPageIdx);
+
+  onProgress?.("Saving PDF...");
+  const safeName = (reportTitle || "bi_report").toLowerCase().replace(/[^a-z0-9]/g, "_");
+  pdf.save(`${safeName}_report.pdf`);
+}
+
+/* ════════════════════════════════════════════════════════════════
+   PowerPoint Export — pptxgenjs
+   Captures ALL dashboard pages as high-res slides with charts.
+   ════════════════════════════════════════════════════════════════ */
+async function exportReportToPptx(report, dashboardElement, currentPageIdx, setPageIdx, onProgress) {
+  if (!report || !dashboardElement) return;
+
+  const reportTitle = report.title || "Business Intelligence Report";
+  const reportSubtitle = report.subtitle || "Executive Analytics Briefing";
+  const pages = report.pages || [];
+  if (pages.length === 0) return;
+
+  const origPageIdx = currentPageIdx;
+
+  const pptx = new PptxGenJS();
+  pptx.defineLayout({ name: "CUSTOM", width: 13.33, height: 7.5 });
+  pptx.layout = "CUSTOM";
+  pptx.author = "Kadash BI Agent";
+  pptx.company = "Kadash";
+  pptx.subject = reportTitle;
+  pptx.title = reportTitle;
+
+  // ── Title Slide ──
+  const titleSlide = pptx.addSlide();
+  titleSlide.background = { color: "0F1218" };
+  titleSlide.addText(reportTitle, {
+    x: 0.8, y: 2.2, w: 11.7, h: 1.3,
+    fontSize: 36, fontFace: "Segoe UI", bold: true,
+    color: "F8FAFC", align: "center",
+  });
+  titleSlide.addText(reportSubtitle, {
+    x: 1.5, y: 3.5, w: 10.3, h: 0.8,
+    fontSize: 16, fontFace: "Segoe UI",
+    color: "94A3B8", align: "center",
+  });
+  titleSlide.addText("Kadash BI \u2022 Executive Report", {
+    x: 0.8, y: 5.5, w: 4, h: 0.4,
+    fontSize: 10, fontFace: "Segoe UI Semibold",
+    color: "10B981",
+  });
+  titleSlide.addText(new Date().toLocaleDateString(), {
+    x: 8.5, y: 5.5, w: 4, h: 0.4,
+    fontSize: 10, fontFace: "Segoe UI",
+    color: "64748B", align: "right",
+  });
+
+  // ── Content Slides: one per page ──
+  for (let pIdx = 0; pIdx < pages.length; pIdx++) {
+    const pageName = pages[pIdx]?.name || `Page ${pIdx + 1}`;
+    onProgress?.(`Capturing page ${pIdx + 1} of ${pages.length}: ${pageName}...`);
+
+    if (pages.length > 1) {
+      setPageIdx(pIdx);
+      await new Promise((r) => setTimeout(r, 900));
+    }
+
+    try {
+      const canvas = await captureElementToCanvas(dashboardElement);
+      const imgBase64 = canvas.toDataURL("image/png");
+
+      const slide = pptx.addSlide();
+      slide.background = { color: "0F1218" };
+
+      const slideW = 13.33;
+      const slideH = 7.5;
+      const maxImgW = slideW - 0.6;
+      const maxImgH = slideH - 0.9;
+      const aspectRatio = canvas.width / canvas.height;
+
+      let drawW = maxImgW;
+      let drawH = drawW / aspectRatio;
+      if (drawH > maxImgH) {
+        drawH = maxImgH;
+        drawW = drawH * aspectRatio;
+      }
+
+      const offsetX = (slideW - drawW) / 2;
+      const offsetY = 0.5 + (maxImgH - drawH) / 2;
+
+      slide.addImage({ data: imgBase64, x: offsetX, y: offsetY, w: drawW, h: drawH });
+
+      slide.addText(pageName, {
+        x: 0.3, y: 0.08, w: 6, h: 0.35,
+        fontSize: 11, fontFace: "Segoe UI Semibold", color: "94A3B8",
+      });
+      slide.addText(`Page ${pIdx + 1} of ${pages.length}  \u2022  ${reportTitle}`, {
+        x: 7, y: slideH - 0.35, w: 6, h: 0.3,
+        fontSize: 8, fontFace: "Segoe UI", color: "64748B", align: "right",
+      });
+    } catch (err) {
+      console.warn(`PPTX capture failed for page ${pIdx}:`, err);
+      const slide = pptx.addSlide();
+      slide.background = { color: "0F1218" };
+      slide.addText(`Page "${pageName}" could not be captured`, {
+        x: 2, y: 3, w: 9, h: 1.5,
+        fontSize: 18, fontFace: "Segoe UI", color: "94A3B8", align: "center",
+      });
+    }
+  }
+
+  // Restore original page
+  if (pages.length > 1) setPageIdx(origPageIdx);
+
+  onProgress?.("Saving PowerPoint...");
+  const safeName = (reportTitle || "bi_report").toLowerCase().replace(/[^a-z0-9]/g, "_");
+  await pptx.writeFile({ fileName: `${safeName}_report.pptx` });
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -1434,6 +2073,52 @@ export default function InteractiveDashboard({ spec }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [modalChart, setModalChart] = useState(null);
   const [sliderValues, setSliderValues] = useState({});
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState("");
+  const dashboardRef = useRef(null);
+
+  /* Wrapped export handlers: show overlay, run export, hide overlay */
+  const handleExportPdf = useCallback(async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    setExportMessage("Preparing PDF export...");
+    try {
+      await new Promise((r) => setTimeout(r, 100)); // let overlay paint
+      await exportReportToPdf(
+        normalizeDashboardSpec(spec),
+        dashboardRef.current,
+        activePageIndex,
+        setActivePageIndex,
+        setExportMessage
+      );
+    } catch (err) {
+      console.error("PDF export error:", err);
+    } finally {
+      setIsExporting(false);
+      setExportMessage("");
+    }
+  }, [spec, activePageIndex, isExporting]);
+
+  const handleExportPptx = useCallback(async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    setExportMessage("Preparing PowerPoint export...");
+    try {
+      await new Promise((r) => setTimeout(r, 100)); // let overlay paint
+      await exportReportToPptx(
+        normalizeDashboardSpec(spec),
+        dashboardRef.current,
+        activePageIndex,
+        setActivePageIndex,
+        setExportMessage
+      );
+    } catch (err) {
+      console.error("PPTX export error:", err);
+    } finally {
+      setIsExporting(false);
+      setExportMessage("");
+    }
+  }, [spec, activePageIndex, isExporting]);
 
   const handleSliderChange = (sliderId, val) => {
     setSliderValues((prev) => ({
@@ -1516,7 +2201,7 @@ export default function InteractiveDashboard({ spec }) {
 
   /* ─── Dashboard body (shared between inline and fullscreen) ─── */
   const body = (fs = false) => (
-    <div className="space-y-4">
+    <div ref={dashboardRef} className="space-y-4 kadash-bi-dashboard">
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-4 border-b border-[#202734]">
         <div className="min-w-0 flex-1">
@@ -1546,10 +2231,28 @@ export default function InteractiveDashboard({ spec }) {
           <button
             onClick={() => exportReportToXlsx(report, { ...page, charts: filteredCharts })}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11.5px] font-medium bg-[#151921] hover:bg-[#1E2534] border border-[#222734] hover:border-[#2E374A] text-[#CBD5E1] hover:text-white transition-all shadow-xs cursor-pointer"
-            title="Export full report to Excel (.xlsx) — ready for Power BI Desktop"
+            title="Export full report to Excel (.xlsx) — Executive Summary + Data Tabs"
           >
             <FileSpreadsheet size={13} className="text-[#10B981]" />
             <span>Excel</span>
+          </button>
+          <button
+            onClick={handleExportPdf}
+            disabled={isExporting}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11.5px] font-medium bg-[#151921] hover:bg-[#1E2534] border border-[#222734] hover:border-[#2E374A] text-[#CBD5E1] hover:text-white transition-all shadow-xs cursor-pointer ${isExporting ? 'opacity-50 pointer-events-none' : ''}`}
+            title="Export all pages as PDF report with charts, KPIs & layout"
+          >
+            <FileText size={13} className="text-[#EF4444]" />
+            <span>PDF</span>
+          </button>
+          <button
+            onClick={handleExportPptx}
+            disabled={isExporting}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11.5px] font-medium bg-[#151921] hover:bg-[#1E2534] border border-[#222734] hover:border-[#2E374A] text-[#CBD5E1] hover:text-white transition-all shadow-xs cursor-pointer ${isExporting ? 'opacity-50 pointer-events-none' : ''}`}
+            title="Export all pages as PowerPoint presentation"
+          >
+            <Presentation size={13} className="text-[#F59E0B]" />
+            <span>PPTX</span>
           </button>
           <button
             onClick={() => setIsFullscreen(!fs)}
@@ -1742,18 +2445,24 @@ export default function InteractiveDashboard({ spec }) {
       {/* ── Charts Grid ── */}
       {filteredCharts.length > 0 && (
         <div className={`grid gap-4 ${gridCols}`}>
-          {filteredCharts.map((chart, idx) => (
-            <div
-              key={chart.id || idx}
-              className="bg-[#151921] border border-[#222734] rounded-lg p-4 sm:p-4.5 hover:border-[#2C3547] transition-all shadow-xs"
-            >
-              <ChartCard
-                chart={chart}
-                onExpand={setModalChart}
-                expanded={fs}
-              />
-            </div>
-          ))}
+          {filteredCharts.map((chart, idx) => {
+            const isTable = (chart.type || "").toLowerCase() === "table";
+            return (
+              <div
+                key={chart.id || idx}
+                id={`chart-card-${chart.id || idx}`}
+                className={`bg-[#151921] border border-[#222734] rounded-lg p-4 sm:p-4.5 hover:border-[#2C3547] transition-all shadow-xs ${
+                  isTable ? "col-span-full" : ""
+                }`}
+              >
+                <ChartCard
+                  chart={chart}
+                  onExpand={setModalChart}
+                  expanded={fs}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1789,6 +2498,26 @@ export default function InteractiveDashboard({ spec }) {
               </div>
               {body(true)}
             </div>
+          </div>,
+          document.body
+        )}
+
+      {/* Export progress overlay — hides page switching from the user */}
+      {isExporting &&
+        createPortal(
+          <div className="fixed inset-0 z-[99999] flex items-center justify-center" style={{ backgroundColor: "rgba(13, 16, 23, 0.92)", backdropFilter: "blur(8px)" }}>
+            <div className="flex flex-col items-center gap-4 p-8 rounded-xl" style={{ backgroundColor: "#151921", border: "1px solid #222734", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.6)" }}>
+              {/* Spinning indicator */}
+              <div className="relative">
+                <div style={{ width: 48, height: 48, border: "3px solid #222734", borderTopColor: "#10B981", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+              </div>
+              <div className="text-center">
+                <p className="text-[14px] font-semibold text-[#F8FAFC] mb-1">Exporting Report</p>
+                <p className="text-[12px] text-[#94A3B8] max-w-[300px]">{exportMessage || "Processing..."}</p>
+              </div>
+              <p className="text-[10px] text-[#64748B]">Please wait, do not close the window</p>
+            </div>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
           </div>,
           document.body
         )}
