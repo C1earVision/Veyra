@@ -3,5 +3,28 @@ name = "ai-backend"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "langchain",
+    "langchain-community",
+    "langchain-experimental",
+    "fastapi",
+    "python-dotenv",
+    "streamlit",
+    "uvicorn",
+    "pydantic",
+    "PyJWT",
+    "httpx",
+    "requests",
+    "langchain_google_community",
+    "langchain_tavily",
+    "langchain_groq",
+    "langchain_openai",
+    "langgraph",
+    "langchain-google-community[places]",
+    "psycopg2-binary",
+    "matplotlib",
+    "pandas",
+    "seaborn",
+    "numpy",
+]
