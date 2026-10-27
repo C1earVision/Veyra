@@ -21,7 +21,8 @@ app.use(express.json());
 app.use(helmet())
 app.use(xss())
 const allowedOrigins = [
-  'https://Veyra-chi.vercel.app',
+  "https://kadash-api-zeta.vercel.app",
+  "https://veyra-47mr-pi.vercel.app",
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost:9001'
