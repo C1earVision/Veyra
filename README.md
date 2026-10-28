@@ -36,7 +36,7 @@ Veyra is a full-stack **Agentic RAG** (Retrieval-Augmented Generation) assistant
 
 ### Key Features
 
-- 🤖 **Multi-Agent Routing** — Intelligent intent classification routes each message to 1 of 4 specialized agents
+- 🤖 **Multi-Agent Routing** — Intelligent intent classification routes each message to specialized agents
 - 🔍 **Web Search** — Real-time internet search via Tavily for up-to-date market info and benchmarks
 - 🗃️ **RAG over SQL** — Natural language queries translated to SQL against any connected database (PostgreSQL, MySQL, SQLite, DuckDB)
 - ✏️ **Catalog CRUD Operations** — Dedicated agent tools for adding products with auto-fetched images via Tavily image search
@@ -181,13 +181,20 @@ When the Analysis Agent generates a dashboard, it returns a structured JSON spec
 ├── 📁 AI_BackEnd/                  # Python — FastAPI + LangGraph Agents
 │   ├── main.py                     # FastAPI server, /query endpoint, data source endpoints, visualization parser
 │   ├── Agent/
-│   │   └── AgenticWorkFlow.py      # Agent class hierarchy (General → Search/RAG/CRUD/Analysis)
+│   │   ├── AgenticWorkFlow.py      # Agent class hierarchy (General → Search/RAG/CRUD/Analysis)
+│   │   └── bi_pipeline/            # Advanced BI pipeline orchestration
+│   │       └── orchestrator.py    # Coordinates multi-step BI analysis
 │   ├── Prompt/                     # System prompts for each agent (domain-agnostic)
 │   │   ├── generalSysPrompt.py     # Intent router prompt
 │   │   ├── SearchSysPrompt.py      # Web search agent prompt
 │   │   ├── RagSysPropmt.py         # Natural language SQL agent prompt
 │   │   ├── dashboardSysPrompt.py   # CRUD agent prompt
-│   │   └── analysisAgent.py        # BI dashboard agent prompt (4-step analysis procedure)
+│   │   ├── analysisAgent.py        # BI dashboard agent prompt (4-step analysis procedure)
+│   │   └── bi_pipeline/            # Pipeline-specific prompts
+│   │       ├── question_planner_prompt.py
+│   │       ├── sql_engineer_prompt.py
+│   │       ├── single_chart_prompt.py
+│   │       └── dashboard_assembler_prompt.py
 │   ├── Tools/                      # Tool implementations
 │   │   ├── webSearch.py            # Tavily web search wrapper
 │   │   ├── CRUD.py                 # Product CRUD + image search tools
@@ -200,9 +207,13 @@ When the Analysis Agent generates a dashboard, it returns a structured JSON spec
 │   │   └── config.yaml             # Multi-model fallback chain configuration
 │   ├── Utils/
 │   │   ├── ModelLoader.py          # Resilient model loader with rate-limit backoff (ResilientChatGroq/OpenAI)
-│   │   └── TavilySearch.py         # Tavily search utility wrapper
+│   │   ├── TavilySearch.py         # Tavily search utility wrapper
+│   │   └── query_pipeline.py      # Logic for processing queries through the agent chain
+│   ├── schemas/                    # Pydantic models for API requests/responses
+│   │   ├── query_models.py
+│   │   └── bi_pipeline_models.py
 │   ├── Dockerfile                  # Production Docker image (Render/Railway)
-│   └── req.txt                     # Python dependencies
+│   └── requirements.txt           # Python dependencies
 │
 ├── 📁 BackEnd/                     # Node.js — Express REST API
 │   ├── app.js                      # Express server with security middleware
@@ -279,7 +290,7 @@ python -m venv .venv
 # source .venv/bin/activate   # macOS/Linux
 
 # Install dependencies
-pip install -r req.txt
+pip install -r requirements.txt
 
 # Copy .env.example to .env and fill in your values
 cp .env.example .env
@@ -479,5 +490,3 @@ The project is deployed across multiple platforms:
 ### Local Development
 
 Copy the `.env.example` files to `.env` in each service folder. The frontend falls back to `localhost:3000` and `127.0.0.1:9000` when `VITE_*` vars are not set.
-
----
