@@ -20,3 +20,4 @@ duckdb-engine==0.17.0
 sqlalchemy==2.0.39
 matplotlib==3.10.0
 python-multipart==0.0.26
+dnspython>=2.6.0

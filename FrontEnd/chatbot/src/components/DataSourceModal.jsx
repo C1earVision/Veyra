@@ -315,9 +315,9 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
         {/* Content Body */}
         <div className="p-6 overflow-y-auto flex-1">
           {error && (
-            <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-[12.5px] flex items-start gap-2.5">
-              <AlertCircle size={16} className="mt-0.5 shrink-0" />
-              <span>{error}</span>
+            <div className="mb-4 p-3.5 rounded-lg bg-red-500/10 border border-red-500/25 text-red-300 text-[12px] flex items-start gap-2.5 max-h-72 overflow-y-auto">
+              <AlertCircle size={18} className="mt-0.5 shrink-0 text-red-400" />
+              <div className="whitespace-pre-line leading-relaxed font-sans flex-1">{error}</div>
             </div>
           )}
 

@@ -5,13 +5,17 @@ import glob
 import json
 import os
 import re
+import socket
 import uuid
 import base64
 import duckdb
 import pandas as pd
 from typing import Dict, Any, Optional, List
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 from langchain_community.utilities import SQLDatabase
+from sqlalchemy import create_engine, event
 from DB.connect import dataBaseConnection
+from DB.connection_errors import _resolve_host, format_db_connection_error
 
 
 class DataSourceManager:
@@ -60,17 +64,103 @@ class DataSourceManager:
             print(f"[DataSourceManager] Default database connection failed: {e}")
             return None
 
-    def register_database_connection(self, connection_url: str, custom_name: Optional[str] = None) -> Dict[str, Any]:
-        raw_url = connection_url.strip()
+    def _prepare_connection_url(self, raw_url: str) -> tuple:
+        """Normalise a user-supplied connection URL for SQLAlchemy + psycopg2.
 
-        # Normalize postgres URLs for SQLAlchemy psycopg2 driver
+        Returns (url, engine_args, is_ipv6) where engine_args may contain connect_args
+        with a hostaddr for IPv6-only hosts.
+
+        * Rewrites postgres:// and plain postgresql:// schemes.
+        * Resolves hostnames via _resolve_host (supports IPv6-only via dnspython).
+        * Ensures sslmode=require for known cloud providers.
+        """
+        # Scheme normalisation
         if raw_url.startswith("postgres://"):
             raw_url = raw_url.replace("postgres://", "postgresql+psycopg2://", 1)
         elif raw_url.startswith("postgresql://") and not raw_url.startswith("postgresql+"):
             raw_url = raw_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-        db = SQLDatabase.from_uri(raw_url)
-        table_names = db.get_usable_table_names()
+        parsed = urlparse(raw_url)
+        engine_args = {}
+        is_ipv6_host = False
+
+        # Check if user left the Supabase placeholder password unchanged
+        if "[YOUR-PASSWORD]" in raw_url or "YOUR-PASSWORD" in (parsed.password or ""):
+            raise ValueError(
+                "The connection string still contains the placeholder '[YOUR-PASSWORD]'. "
+                "Please replace it with your actual Supabase database password."
+            )
+
+        # Check if user accidentally kept the square brackets around their password: [my_password]
+        if parsed.password and parsed.password.startswith("[") and parsed.password.endswith("]"):
+            clean_pw = parsed.password[1:-1]
+            raw_url = raw_url.replace(f":{parsed.password}@", f":{clean_pw}@", 1)
+            parsed = urlparse(raw_url)
+
+        # --- Hostname resolution (IPv4 + IPv6 via dnspython) ---
+        hostname = parsed.hostname or ""
+        new_netloc = None
+        if hostname and not hostname.replace(".", "").replace("-", "").isdigit():
+            ip, is_ipv6 = _resolve_host(hostname)
+            if ip is None:
+                raise ValueError(
+                    f'Could not resolve database host "{hostname}".'
+                )
+            is_ipv6_host = is_ipv6
+            if is_ipv6:
+                # Keep original hostname in URL for SSL SNI verification,
+                # pass resolved IPv6 address via libpq hostaddr to bypass
+                # psycopg2's broken DNS resolution on Windows.
+                engine_args["connect_args"] = {"hostaddr": ip}
+            # For IPv4: do NOT overwrite the hostname or netloc with the raw IP!
+            # The original hostname is already IPv4-compatible and preserves
+            # SSL certificates, SNI, and cloud load-balancer routing.
+
+        # --- SSL for cloud providers ---
+        cloud_providers = ("supabase", "neon", "railway", "render", "cockroachlabs")
+        needs_ssl = any(p in hostname for p in cloud_providers)
+        qs = parse_qs(parsed.query)
+        if needs_ssl and "sslmode" not in qs:
+            qs["sslmode"] = ["require"]
+
+        new_query = urlencode(qs, doseq=True)
+
+        rebuilt = urlunparse((
+            parsed.scheme,
+            new_netloc or parsed.netloc,
+            parsed.path,
+            parsed.params,
+            new_query,
+            parsed.fragment,
+        ))
+        return rebuilt, engine_args, is_ipv6_host
+
+    def register_database_connection(self, connection_url: str, custom_name: Optional[str] = None) -> Dict[str, Any]:
+        raw_url = connection_url.strip()
+
+        # Extract basic connection context for detailed error diagnostic reporting
+        parsed_url = urlparse(raw_url)
+        diag_context = {
+            "hostname": parsed_url.hostname,
+            "port": parsed_url.port,
+            "username": parsed_url.username,
+            "database": parsed_url.path.lstrip("/") if parsed_url.path else None,
+            "is_ipv6": False,
+        }
+
+        try:
+            prepared_url, engine_args, is_ipv6 = self._prepare_connection_url(raw_url)
+            diag_context["is_ipv6"] = is_ipv6
+        except Exception as e:
+            friendly_err = format_db_connection_error(e, raw_url=raw_url, **diag_context)
+            raise ValueError(friendly_err) from e
+
+        try:
+            db = SQLDatabase.from_uri(prepared_url, engine_args=engine_args)
+            table_names = db.get_usable_table_names()
+        except Exception as e:
+            friendly_err = format_db_connection_error(e, raw_url=raw_url, **diag_context)
+            raise ValueError(friendly_err) from e
 
         source_id = f"db_{uuid.uuid4().hex[:8]}"
         display_name = custom_name or self._extract_db_name(raw_url)
