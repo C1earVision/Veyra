@@ -144,38 +144,88 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
       return;
     }
 
-    const totalSize = files.reduce((acc, f) => acc + (f.size || 0), 0);
-    if (totalSize > 4.5 * 1024 * 1024) {
-      setError(
-        `Total file size (${(totalSize / (1024 * 1024)).toFixed(1)} MB) exceeds Vercel's 4.5 MB serverless limit for direct uploads. Please upload files under 4.5 MB or connect via database URL.`
-      );
-      return;
-    }
-
     setLoading(true);
     setError(null);
     setSuccessMsg(null);
 
     try {
-      const formData = new FormData();
-      files.forEach((file) => {
-        formData.append("files", file);
-      });
+      // Step 1: Check with backend if direct Supabase upload is available
+      const preparePayload = {
+        files: files.map((f) => ({ filename: f.name, size: f.size })),
+        custom_name: datasetName.trim() || undefined,
+      };
 
-      if (datasetName.trim()) {
-        formData.append("custom_name", datasetName.trim());
+      const prepareRes = await axios.post(
+        `${AI_API_URL}/data-sources/prepare-upload`,
+        preparePayload,
+        { headers: authHeaders() }
+      );
+
+      let createdSource = null;
+
+      if (prepareRes.data?.mode === "supabase" && prepareRes.data?.files?.length > 0) {
+        // Step 2a: Direct upload to Supabase Storage (bypasses Vercel 4.5MB limit entirely!)
+        const preparedFiles = prepareRes.data.files;
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const fileInfo = preparedFiles.find((pf) => pf.filename === file.name) || preparedFiles[i];
+          setSuccessMsg(`Uploading ${file.name} to database storage (${i + 1}/${files.length})...`);
+
+          const uploadRes = await fetch(fileInfo.upload_url, {
+            method: "PUT",
+            headers: {
+              "Content-Type": file.type || "application/octet-stream",
+            },
+            body: file,
+          });
+
+          if (!uploadRes.ok) {
+            throw new Error(`Failed to upload ${file.name} to storage (status ${uploadRes.status})`);
+          }
+        }
+
+        // Step 2b: Inform backend that upload is complete to convert & register tables
+        setSuccessMsg("Processing dataset into queryable tables...");
+        const completeRes = await axios.post(
+          `${AI_API_URL}/data-sources/complete-upload`,
+          {
+            upload_id: prepareRes.data.upload_id,
+            files: preparedFiles.map((pf) => ({
+              filename: pf.filename,
+              storage_path: pf.storage_path,
+            })),
+            custom_name: datasetName.trim() || undefined,
+          },
+          { headers: authHeaders() }
+        );
+
+        createdSource = completeRes.data?.data_source;
+      } else {
+        // Fallback: Direct upload to backend (works for local development or small files)
+        const totalSize = files.reduce((acc, f) => acc + (f.size || 0), 0);
+        if (totalSize > 4.5 * 1024 * 1024) {
+          throw new Error(
+            `Files total ${(totalSize / (1024 * 1024)).toFixed(1)} MB. To upload files over 4.5 MB in production, Supabase Storage must be configured in backend environment variables.`
+          );
+        }
+
+        const formData = new FormData();
+        files.forEach((file) => {
+          formData.append("files", file);
+        });
+        if (datasetName.trim()) {
+          formData.append("custom_name", datasetName.trim());
+        }
+
+        const res = await axios.post(`${AI_API_URL}/data-sources/upload`, formData, {
+          headers: authHeaders(),
+        });
+        createdSource = res.data?.data_source;
       }
 
-      // Do NOT specify "Content-Type" manually: Axios/browser will automatically
-      // set "multipart/form-data; boundary=..." which is required for multipart parsing.
-      const res = await axios.post(`${AI_API_URL}/data-sources/upload`, formData, {
-        headers: authHeaders(),
-      });
-
-      if (res.data?.data_source) {
-        const newSource = res.data.data_source;
-        setSuccessMsg(`Dataset prepared! Discovered ${newSource.tables.length} table(s).`);
-        onSelectSource(newSource);
+      if (createdSource) {
+        setSuccessMsg(`Dataset prepared! Discovered ${createdSource.tables.length} table(s).`);
+        onSelectSource(createdSource);
         fetchActiveSources();
         setFiles([]);
         setDatasetName("");

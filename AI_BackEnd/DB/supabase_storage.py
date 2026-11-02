@@ -10,6 +10,7 @@ filesystem path work as before (good for local development).
 """
 
 import os
+import json
 from typing import Optional, List
 
 import httpx
@@ -49,17 +50,45 @@ def _ensure_bucket() -> None:
     try:
         url = f"{_url()}/storage/v1/bucket/{BUCKET}"
         resp = httpx.get(url, headers=_headers(), timeout=10)
-        if resp.status_code == 404:
-            httpx.post(
+        # Supabase returns 400 or 404 when bucket does not exist
+        if resp.status_code in (400, 404) or "not found" in resp.text.lower():
+            create_resp = httpx.post(
                 f"{_url()}/storage/v1/bucket",
                 headers=_headers("application/json"),
                 json={"id": BUCKET, "name": BUCKET, "public": False},
                 timeout=10,
             )
-            print(f"[SupabaseStorage] Created bucket '{BUCKET}'")
+            if create_resp.status_code in (200, 201):
+                print(f"[SupabaseStorage] Created bucket '{BUCKET}'")
         _bucket_ensured = True
     except Exception as e:
         print(f"[SupabaseStorage] Warning: could not ensure bucket: {e}")
+
+
+def create_signed_upload_url(remote_path: str) -> Optional[dict]:
+    """Generate a signed upload URL for direct client-to-Supabase upload."""
+    if not is_configured():
+        return None
+    _ensure_bucket()
+    try:
+        url = f"{_url()}/storage/v1/object/upload/sign/{BUCKET}/{remote_path}"
+        resp = httpx.post(
+            url,
+            headers=_headers("application/json"),
+            json={"upsert": True},
+            timeout=10,
+        )
+        if resp.status_code in (200, 201):
+            data = resp.json()
+            upload_path = data.get("url", "")
+            return {
+                "upload_url": f"{_url()}/storage/v1{upload_path}",
+                "path": remote_path,
+            }
+        print(f"[SupabaseStorage] create_signed_upload_url returned {resp.status_code}: {resp.text}")
+    except Exception as e:
+        print(f"[SupabaseStorage] create_signed_upload_url failed: {e}")
+    return None
 
 
 def upload(remote_path: str, data: bytes, content_type: str = "application/octet-stream") -> bool:
@@ -111,10 +140,11 @@ def delete(remote_paths: List[str]) -> bool:
     _ensure_bucket()
     try:
         url = f"{_url()}/storage/v1/object/{BUCKET}"
-        resp = httpx.delete(
+        resp = httpx.request(
+            "DELETE",
             url,
             headers=_headers("application/json"),
-            json={"prefixes": remote_paths},
+            content=json.dumps({"prefixes": remote_paths}).encode(),
             timeout=30,
         )
         return resp.status_code in (200, 201)

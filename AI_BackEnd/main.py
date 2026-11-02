@@ -22,6 +22,8 @@ from Utils.jwt_auth import (
 from Utils.sse import format_sse
 from schemas.query_models import QueryResponse
 from DB.DataSourceManager import data_source_manager
+from DB import supabase_storage
+import uuid
 load_dotenv()
 # Agent runs (especially Ollama) can exceed LangChain's 120s default stream chunk gap.
 os.environ.setdefault("LANGCHAIN_OPENAI_STREAM_CHUNK_TIMEOUT_S", "0")
@@ -86,6 +88,27 @@ class ConnectDbRequest(BaseModel):
 
 class RenameSourceRequest(BaseModel):
     name: str
+
+
+class PrepareUploadFile(BaseModel):
+    filename: str
+    size: Optional[int] = None
+
+
+class PrepareUploadRequest(BaseModel):
+    files: List[PrepareUploadFile]
+    custom_name: Optional[str] = None
+
+
+class CompleteUploadFileItem(BaseModel):
+    filename: str
+    storage_path: str
+
+
+class CompleteUploadRequest(BaseModel):
+    upload_id: str
+    files: List[CompleteUploadFileItem]
+    custom_name: Optional[str] = None
 
 
 class QueryRequest(BaseModel):
@@ -186,6 +209,72 @@ async def connect_database(request: ConnectDbRequest):
         result = data_source_manager.register_database_connection(
             request.connection_string, request.custom_name
         )
+        return {"status": "ok", "data_source": result}
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"status": "error", "error": str(e)})
+
+
+@app.post("/data-sources/prepare-upload")
+async def prepare_upload(request: PrepareUploadRequest):
+    """
+    If Supabase Storage is configured, generates direct signed upload URLs
+    so large files upload straight from client browser to Supabase Storage,
+    bypassing Vercel's 4.5 MB request body limit.
+    """
+    if not supabase_storage.is_configured():
+        return {"status": "ok", "mode": "direct"}
+
+    upload_id = uuid.uuid4().hex[:12]
+    files_info = []
+    for f in request.files:
+        safe_filename = os.path.basename(f.filename).replace(" ", "_")
+        remote_path = f"uploads/{upload_id}/{safe_filename}"
+        signed = supabase_storage.create_signed_upload_url(remote_path)
+        if not signed:
+            # Fallback to direct if sign fails
+            return {"status": "ok", "mode": "direct"}
+        files_info.append({
+            "filename": f.filename,
+            "storage_path": remote_path,
+            "upload_url": signed["upload_url"],
+        })
+
+    return {
+        "status": "ok",
+        "mode": "supabase",
+        "upload_id": upload_id,
+        "files": files_info,
+    }
+
+
+@app.post("/data-sources/complete-upload")
+async def complete_upload(request: CompleteUploadRequest):
+    """
+    Called after files are uploaded directly to Supabase Storage.
+    Downloads the files in backend, creates the DuckDB dataset,
+    persists it in Supabase, and removes the temp raw files.
+    """
+    try:
+        files_data = []
+        for file_item in request.files:
+            content = supabase_storage.download(file_item.storage_path)
+            if not content:
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "error": f"Failed to retrieve {file_item.filename} from storage"},
+                )
+            files_data.append({"filename": file_item.filename, "content": content})
+
+        result = data_source_manager.register_uploaded_files(
+            files_data, custom_name=request.custom_name
+        )
+
+        # Cleanup temp raw files in Supabase Storage
+        try:
+            supabase_storage.delete([f.storage_path for f in request.files])
+        except Exception as e:
+            print(f"[SupabaseStorage] Cleanup failed: {e}")
+
         return {"status": "ok", "data_source": result}
     except Exception as e:
         return JSONResponse(status_code=400, content={"status": "error", "error": str(e)})
