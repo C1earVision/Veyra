@@ -690,48 +690,6 @@ function ChatView({
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Top action bar showing active data source */}
-      <div className="flex items-center justify-between px-4 sm:px-6 py-2.5 border-b border-[#1E2230] bg-[#0F1117]/80 backdrop-blur-sm">
-        <div className="flex items-center gap-2.5">
-          {onToggleSidebar && (
-            <>
-              <button
-                onClick={onToggleSidebar}
-                className="p-1.5 rounded-lg text-[#9CA3AF] hover:text-[#F3F4F6] hover:bg-[#1E2230] transition-colors cursor-pointer"
-                title={isSidebarOpen ? "Collapse sidebar" : "Open sidebar"}
-              >
-                {isSidebarOpen ? (
-                  <PanelLeftClose size={16} />
-                ) : (
-                  <PanelLeftOpen size={16} className="text-blue-400" />
-                )}
-              </button>
-              <span className="h-4 w-[1px] bg-[#1E2230]" />
-            </>
-          )}
-          <span className="text-[12px] text-[#6B7280]">Active Data:</span>
-          <button
-            onClick={onOpenSourceModal}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-blue-400 bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 rounded-md transition-colors cursor-pointer"
-            title="Click to connect another database or upload CSV/Excel files"
-          >
-            <Database size={13} />
-            <span>{activeSource?.name || "Default Database"}</span>
-            <span className="text-[10px] text-blue-400/70 ml-0.5">▾</span>
-          </button>
-        </div>
-
-        {messages.length > 0 && (
-          <button
-            onClick={handleResetChat}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-[12px] text-[#9CA3AF] hover:text-[#F3F4F6] hover:bg-[#1E2230] rounded-md transition-colors cursor-pointer"
-            title="Start new conversation"
-          >
-            <RotateCcw size={13} />
-            <span>New chat</span>
-          </button>
-        )}
-      </div>
 
       {/* Messages area */}
       <div
@@ -782,6 +740,15 @@ function ChatView({
                 </button>
               ))}
             </div>
+
+            {/* Connect Database */}
+            <button
+              onClick={onOpenSourceModal}
+              className="flex items-center gap-2 px-5 py-2.5 mt-8 text-[13px] font-medium text-blue-400 bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 hover:border-blue-500/40 rounded-lg transition-all cursor-pointer group"
+            >
+              <Database size={15} className="group-hover:scale-110 transition-transform" />
+              <span>Connect Database</span>
+            </button>
           </div>
         ) : (
           /* Active conversation transcript */
@@ -958,6 +925,7 @@ export default function App() {
   });
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const modelDropdownRef = useRef(null);
+  const liveChatIdRef = useRef(null);
 
   const navigate = useNavigate();
 
@@ -1052,6 +1020,11 @@ export default function App() {
   };
 
   const handleSelectChat = async (chat) => {
+    // Save current chat as the live chat before switching
+    if (currentChatId && messages.length > 0) {
+      liveChatIdRef.current = currentChatId;
+    }
+
     // Re-read from storage in case a background streaming response has
     // updated this session since the sidebar was last rendered.
     const freshChats = getRecentChats();
@@ -1100,9 +1073,29 @@ export default function App() {
   };
 
   const handleNewChat = () => {
+    liveChatIdRef.current = null;
     setCurrentChatId(null);
     setMessages([]);
     localStorage.setItem("messages", JSON.stringify(["Context: "]));
+    setPage("agent");
+  };
+
+  const handleGoToCurrentChat = () => {
+    const targetId = liveChatIdRef.current;
+    if (targetId) {
+      const freshChats = getRecentChats();
+      const liveChat = freshChats.find((c) => c.id === targetId);
+      if (liveChat) {
+        setCurrentChatId(liveChat.id);
+        setMessages(liveChat.messages || []);
+        if (liveChat.contextMessages) {
+          localStorage.setItem("messages", JSON.stringify(liveChat.contextMessages));
+        }
+        setPage("agent");
+        return;
+      }
+    }
+    // No live chat to restore — just go to agent page
     setPage("agent");
   };
 
@@ -1167,7 +1160,7 @@ export default function App() {
           {/* Navigation & Tools */}
           <div className="px-3 py-2 border-b border-[#1E2230]/60 space-y-1 flex-shrink-0">
             <button
-              onClick={() => setPage("agent")}
+              onClick={handleGoToCurrentChat}
               className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md text-[13px] font-medium transition-colors cursor-pointer ${page === "agent" && !currentChatId
                 ? "bg-[#2563EB]/10 text-[#3B82F6]"
                 : "text-[#9CA3AF] hover:text-[#D1D5DB] hover:bg-[#151820]"
@@ -1348,17 +1341,20 @@ export default function App() {
           {/* Footer: Connected Source + User Sign Out */}
           <div className="p-3 border-t border-[#1E2230] space-y-2 flex-shrink-0">
             <div
-              onClick={() => setIsSourceModalOpen(true)}
-              className="p-2 rounded-lg bg-[#151820] border border-[#272B35] hover:border-blue-500/40 cursor-pointer transition-all"
+              className="p-2 rounded-lg bg-[#151820] border border-[#272B35] transition-all"
             >
               <div className="flex items-center justify-between mb-0.5">
                 <span className="text-[10px] font-medium text-[#6B7280] uppercase tracking-wider">
                   Connected Source
                 </span>
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                {activeSource && activeSource.source_id !== "default" && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                )}
               </div>
-              <p className="text-[12px] font-medium text-[#E5E7EB] truncate">
-                {activeSource?.name || "Default Database"}
+              <p className={`text-[12px] font-medium truncate ${activeSource && activeSource.source_id !== "default" ? "text-[#E5E7EB]" : "text-[#6B7280]"}`}>
+                {activeSource && activeSource.source_id !== "default"
+                  ? activeSource.name
+                  : "No database connected"}
               </p>
             </div>
 
@@ -1382,9 +1378,20 @@ export default function App() {
       </aside>
 
       {/* ─── Content ─── */}
-      <main className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden bg-[#0F1117]">
+      <main className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden bg-[#0F1117] relative">
+        {/* Floating sidebar toggle when collapsed */}
+        {!isSidebarOpen && (
+          <button
+            onClick={toggleSidebar}
+            className="absolute top-3 left-3 z-30 p-1.5 rounded-lg bg-[#151820]/90 border border-[#272B35] text-blue-400 hover:text-[#F3F4F6] hover:bg-[#1E2230] transition-colors cursor-pointer shadow-md backdrop-blur-sm"
+            title="Open sidebar"
+          >
+            <PanelLeftOpen size={16} />
+          </button>
+        )}
         {page === "agent" ? (
           <ChatView
+            key={currentChatId || "new"}
             activeSource={activeSource}
             onSelectSource={handleSelectSource}
             onOpenSourceModal={() => setIsSourceModalOpen(true)}

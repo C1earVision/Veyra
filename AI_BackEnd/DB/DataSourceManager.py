@@ -16,6 +16,7 @@ from langchain_community.utilities import SQLDatabase
 from sqlalchemy import create_engine, event
 from DB.connect import dataBaseConnection
 from DB.connection_errors import _resolve_host, format_db_connection_error
+from DB import supabase_storage
 
 
 class DataSourceManager:
@@ -225,6 +226,14 @@ class DataSourceManager:
 
         con.close()
 
+        # Upload DuckDB to Supabase Storage for persistence across deploys
+        if supabase_storage.is_configured():
+            try:
+                with open(db_path, "rb") as f:
+                    supabase_storage.upload(f"{source_id}.duckdb", f.read())
+            except Exception as e:
+                print(f"[DataSourceManager] Supabase upload failed for {source_id}: {e}")
+
         # Connect through LangChain SQLDatabase
         db = SQLDatabase.from_uri(f"duckdb:///{db_path.replace(chr(92), '/')}")
         display_name = (custom_name.strip() if custom_name and custom_name.strip() else None) or (files[0]["filename"] if files else "Uploaded Dataset")
@@ -292,6 +301,10 @@ class DataSourceManager:
             except Exception as e:
                 print(f"[DataSourceManager] Failed to remove {path}: {e}")
 
+        # Also delete from Supabase Storage
+        if supabase_storage.is_configured():
+            supabase_storage.delete([f"{source_id}.duckdb", f"{source_id}.meta.json"])
+
     def delete_source(self, source_id: str) -> Dict[str, Any]:
         if source_id == "default":
             raise ValueError("The default database cannot be deleted.")
@@ -342,6 +355,19 @@ class DataSourceManager:
                 )
         except Exception as e:
             print(f"[DataSourceManager] Failed to persist meta for {source_id}: {e}")
+        # Also persist to Supabase Storage for production resilience
+        if supabase_storage.is_configured():
+            try:
+                supabase_storage.upload(
+                    f"{source_id}.meta.json",
+                    json.dumps(
+                        {"source_id": source_id, "name": name, "type": source_type, "tables": tables},
+                        indent=2,
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+            except Exception as e_sb:
+                print(f"[DataSourceManager] Supabase meta upload failed for {source_id}: {e_sb}")
 
     def _attach_file_source(
         self,
@@ -372,12 +398,27 @@ class DataSourceManager:
             return self.sources[source_id]
 
         db_path = self._duckdb_path(source_id)
+
+        # If local DuckDB file doesn't exist, try downloading from Supabase Storage
+        if not os.path.isfile(db_path) and supabase_storage.is_configured():
+            db_data = supabase_storage.download(f"{source_id}.duckdb")
+            if db_data:
+                try:
+                    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+                    with open(db_path, "wb") as f:
+                        f.write(db_data)
+                    print(f"[DataSourceManager] Downloaded {source_id}.duckdb from Supabase Storage")
+                except Exception as e:
+                    print(f"[DataSourceManager] Failed to save downloaded DuckDB for {source_id}: {e}")
+
         if not os.path.isfile(db_path):
             return None
 
         name = "Uploaded Dataset"
         tables: Optional[List[str]] = None
         meta_path = self._meta_path(source_id)
+
+        # Try loading metadata from local file first, then Supabase Storage
         if os.path.isfile(meta_path):
             try:
                 with open(meta_path, encoding="utf-8") as f:
@@ -386,9 +427,20 @@ class DataSourceManager:
                 tables = meta.get("tables") or None
             except Exception as e:
                 print(f"[DataSourceManager] Bad meta for {source_id}: {e}")
+        elif supabase_storage.is_configured():
+            meta_data = supabase_storage.download(f"{source_id}.meta.json")
+            if meta_data:
+                try:
+                    meta = json.loads(meta_data.decode("utf-8"))
+                    name = meta.get("name") or name
+                    tables = meta.get("tables") or None
+                    with open(meta_path, "wb") as f:
+                        f.write(meta_data)
+                except Exception as e:
+                    print(f"[DataSourceManager] Bad remote meta for {source_id}: {e}")
 
         try:
-            print(f"[DataSourceManager] Restored file source {source_id} from disk")
+            print(f"[DataSourceManager] Restored file source {source_id}")
             return self._attach_file_source(source_id, db_path, name, tables)
         except Exception as e:
             print(f"[DataSourceManager] Failed to restore {source_id}: {e}")
@@ -396,11 +448,27 @@ class DataSourceManager:
 
     def _load_persisted_file_sources(self) -> None:
         """Re-register uploaded DuckDB datasets after server restart."""
+        # Discover from local filesystem
+        local_ids = set()
         for db_path in glob.glob(os.path.join(self.storage_dir, "file_*.duckdb")):
             source_id = os.path.splitext(os.path.basename(db_path))[0]
+            local_ids.add(source_id)
             if source_id in self.sources:
                 continue
             self._restore_file_source(source_id)
+
+        # Also discover from Supabase Storage (handles serverless cold starts)
+        if supabase_storage.is_configured():
+            try:
+                remote_files = supabase_storage.list_objects("")
+                for name in remote_files:
+                    if name.startswith("file_") and name.endswith(".duckdb"):
+                        sid = name.replace(".duckdb", "")
+                        if sid in self.sources or sid in local_ids:
+                            continue
+                        self._restore_file_source(sid)
+            except Exception as e:
+                print(f"[DataSourceManager] Failed to list Supabase Storage sources: {e}")
 
     def _default_source_record(self) -> Optional[Dict[str, Any]]:
         try:

@@ -166,8 +166,8 @@ function normalizeDashboardSpec(spec) {
   const globalSliders = Array.isArray(spec.global_sliders)
     ? spec.global_sliders
     : Array.isArray(spec.sliders)
-    ? spec.sliders
-    : [];
+      ? spec.sliders
+      : [];
 
   if (Array.isArray(spec.pages) && spec.pages.length > 0) {
     return {
@@ -223,8 +223,8 @@ function ChartTooltip({ active, payload, label }) {
           const val =
             typeof entry.value === "number"
               ? entry.value.toLocaleString(undefined, {
-                  maximumFractionDigits: 2,
-                })
+                maximumFractionDigits: 2,
+              })
               : entry.value;
           return (
             <div key={idx} className="flex items-center justify-between gap-4">
@@ -273,8 +273,8 @@ const Y_AXIS_PROPS = {
     v >= 1_000_000
       ? `${(v / 1_000_000).toFixed(1)}M`
       : v >= 1_000
-      ? `${(v / 1_000).toFixed(0)}k`
-      : v,
+        ? `${(v / 1_000).toFixed(0)}k`
+        : v,
 };
 const LEGEND_PROPS = {
   wrapperStyle: { fontSize: "11.5px", paddingTop: "12px", color: "#94A3B8" },
@@ -288,12 +288,12 @@ const BRAZIL_STATES_GEO = {
   SP: [-23.5505, -46.6333], RJ: [-22.9068, -43.1729], MG: [-18.5122, -44.5550],
   RS: [-30.0346, -51.2177], PR: [-25.2521, -52.0215], SC: [-27.2423, -50.2189],
   BA: [-12.5797, -41.7007], DF: [-15.7998, -47.8645], GO: [-15.8270, -49.8362],
-  ES: [-19.1834, -40.3089], PE: [-8.8137, -36.9541],  CE: [-5.4984, -39.3206],
-  PA: [-1.9981, -54.9306],  MT: [-12.6800, -56.9200], MA: [-5.4200, -45.4400],
-  MS: [-20.7722, -54.7852], PB: [-7.2400, -36.7800],  RN: [-5.7945, -36.5654],
-  PI: [-7.7183, -42.7289],  AL: [-9.5713, -36.7820],  SE: [-10.5741, -37.3857],
+  ES: [-19.1834, -40.3089], PE: [-8.8137, -36.9541], CE: [-5.4984, -39.3206],
+  PA: [-1.9981, -54.9306], MT: [-12.6800, -56.9200], MA: [-5.4200, -45.4400],
+  MS: [-20.7722, -54.7852], PB: [-7.2400, -36.7800], RN: [-5.7945, -36.5654],
+  PI: [-7.7183, -42.7289], AL: [-9.5713, -36.7820], SE: [-10.5741, -37.3857],
   TO: [-10.1753, -48.2982], RO: [-11.5057, -63.5806], AM: [-3.4168, -65.8561],
-  AC: [-9.0238, -70.8120],  AP: [0.9020, -52.0030],   RR: [2.7376, -62.0751],
+  AC: [-9.0238, -70.8120], AP: [0.9020, -52.0030], RR: [2.7376, -62.0751],
 };
 
 const BRAZIL_CITIES_GEO = {
@@ -318,41 +318,41 @@ const BRAZIL_CITIES_GEO = {
 
 const COUNTRIES_GEO = {
   US: [37.0902, -95.7129], USA: [37.0902, -95.7129], "UNITED STATES": [37.0902, -95.7129],
-  GB: [55.3781, -3.4360],  UK: [55.3781, -3.4360],  "UNITED KINGDOM": [55.3781, -3.4360],
+  GB: [55.3781, -3.4360], UK: [55.3781, -3.4360], "UNITED KINGDOM": [55.3781, -3.4360],
   CA: [56.1304, -106.3468], CANADA: [56.1304, -106.3468],
-  DE: [51.1657, 10.4515],  GERMANY: [51.1657, 10.4515],
-  FR: [46.2276, 2.2137],   FRANCE: [46.2276, 2.2137],
+  DE: [51.1657, 10.4515], GERMANY: [51.1657, 10.4515],
+  FR: [46.2276, 2.2137], FRANCE: [46.2276, 2.2137],
   BR: [-14.2350, -51.9253], BRAZIL: [-14.2350, -51.9253], BRASIL: [-14.2350, -51.9253],
   JP: [36.2048, 138.2529], JAPAN: [36.2048, 138.2529],
   CN: [35.8617, 104.1954], CHINA: [35.8617, 104.1954],
-  IN: [20.5937, 78.9629],  INDIA: [20.5937, 78.9629],
+  IN: [20.5937, 78.9629], INDIA: [20.5937, 78.9629],
   AU: [-25.2744, 133.7751], AUSTRALIA: [-25.2744, 133.7751],
   MX: [23.6345, -102.5528], MEXICO: [23.6345, -102.5528],
-  ES: [40.4637, -3.7492],  SPAIN: [40.4637, -3.7492],
-  IT: [41.8719, 12.5674],  ITALY: [41.8719, 12.5674],
-  NL: [52.1326, 5.2913],   NETHERLANDS: [52.1326, 5.2913],
-  SE: [60.1282, 18.6435],  SWEDEN: [60.1282, 18.6435],
-  CH: [46.8182, 8.2275],   SWITZERLAND: [46.8182, 8.2275],
-  BE: [50.5039, 4.4699],   BELGIUM: [50.5039, 4.4699],
-  AT: [47.5162, 14.5501],  AUSTRIA: [47.5162, 14.5501],
-  PL: [51.9194, 19.1451],  POLAND: [51.9194, 19.1451],
-  NO: [60.4720, 8.4689],   NORWAY: [60.4720, 8.4689],
-  DK: [56.2639, 9.5018],   DENMARK: [56.2639, 9.5018],
-  FI: [61.9241, 25.7482],  FINLAND: [61.9241, 25.7482],
-  IE: [53.1424, -7.6921],  IRELAND: [53.1424, -7.6921],
-  PT: [39.3999, -8.2245],  PORTUGAL: [39.3999, -8.2245],
-  GR: [39.0742, 21.8243],  GREECE: [39.0742, 21.8243],
-  TR: [38.9637, 35.2433],  TURKEY: [38.9637, 35.2433],
-  SA: [23.8859, 45.0792],  "SAUDI ARABIA": [23.8859, 45.0792],
-  AE: [23.4241, 53.8478],  UAE: [23.4241, 53.8478],
-  EG: [26.8206, 30.8025],  EGYPT: [26.8206, 30.8025],
+  ES: [40.4637, -3.7492], SPAIN: [40.4637, -3.7492],
+  IT: [41.8719, 12.5674], ITALY: [41.8719, 12.5674],
+  NL: [52.1326, 5.2913], NETHERLANDS: [52.1326, 5.2913],
+  SE: [60.1282, 18.6435], SWEDEN: [60.1282, 18.6435],
+  CH: [46.8182, 8.2275], SWITZERLAND: [46.8182, 8.2275],
+  BE: [50.5039, 4.4699], BELGIUM: [50.5039, 4.4699],
+  AT: [47.5162, 14.5501], AUSTRIA: [47.5162, 14.5501],
+  PL: [51.9194, 19.1451], POLAND: [51.9194, 19.1451],
+  NO: [60.4720, 8.4689], NORWAY: [60.4720, 8.4689],
+  DK: [56.2639, 9.5018], DENMARK: [56.2639, 9.5018],
+  FI: [61.9241, 25.7482], FINLAND: [61.9241, 25.7482],
+  IE: [53.1424, -7.6921], IRELAND: [53.1424, -7.6921],
+  PT: [39.3999, -8.2245], PORTUGAL: [39.3999, -8.2245],
+  GR: [39.0742, 21.8243], GREECE: [39.0742, 21.8243],
+  TR: [38.9637, 35.2433], TURKEY: [38.9637, 35.2433],
+  SA: [23.8859, 45.0792], "SAUDI ARABIA": [23.8859, 45.0792],
+  AE: [23.4241, 53.8478], UAE: [23.4241, 53.8478],
+  EG: [26.8206, 30.8025], EGYPT: [26.8206, 30.8025],
   ZA: [-30.5595, 22.9375], "SOUTH AFRICA": [-30.5595, 22.9375],
-  SG: [1.3521, 103.8198],  SINGAPORE: [1.3521, 103.8198],
+  SG: [1.3521, 103.8198], SINGAPORE: [1.3521, 103.8198],
   KR: [35.9078, 127.7669], "SOUTH KOREA": [35.9078, 127.7669],
   NZ: [-40.9006, 174.8860], "NEW ZEALAND": [-40.9006, 174.8860],
   AR: [-38.4161, -63.6167], ARGENTINA: [-38.4161, -63.6167],
   CL: [-35.6751, -71.5430], CHILE: [-35.6751, -71.5430],
-  CO: [4.5709, -74.2973],  COLOMBIA: [4.5709, -74.2973],
+  CO: [4.5709, -74.2973], COLOMBIA: [4.5709, -74.2973],
 };
 
 const US_STATES_GEO = {
@@ -557,11 +557,10 @@ function MapChart({ chart, height = 260 }) {
         <button
           type="button"
           onClick={() => setTileStyle("dark")}
-          className={`px-2 py-0.5 text-[10px] rounded transition-all font-medium ${
-            tileStyle === "dark"
+          className={`px-2 py-0.5 text-[10px] rounded transition-all font-medium ${tileStyle === "dark"
               ? "bg-[#242C3C] text-white shadow-xs"
               : "text-[#8C93A0] hover:text-[#F1F3F5]"
-          }`}
+            }`}
           title="Dark Canvas (Free, No API key)"
         >
           Dark
@@ -569,11 +568,10 @@ function MapChart({ chart, height = 260 }) {
         <button
           type="button"
           onClick={() => setTileStyle("streets")}
-          className={`px-2 py-0.5 text-[10px] rounded transition-all font-medium ${
-            tileStyle === "streets"
+          className={`px-2 py-0.5 text-[10px] rounded transition-all font-medium ${tileStyle === "streets"
               ? "bg-[#242C3C] text-white shadow-xs"
               : "text-[#8C93A0] hover:text-[#F1F3F5]"
-          }`}
+            }`}
           title="OpenStreetMap Streets (Free, No API key)"
         >
           Streets
@@ -581,11 +579,10 @@ function MapChart({ chart, height = 260 }) {
         <button
           type="button"
           onClick={() => setTileStyle("satellite")}
-          className={`px-2 py-0.5 text-[10px] rounded transition-all font-medium ${
-            tileStyle === "satellite"
+          className={`px-2 py-0.5 text-[10px] rounded transition-all font-medium ${tileStyle === "satellite"
               ? "bg-[#242C3C] text-white shadow-xs"
               : "text-[#8C93A0] hover:text-[#F1F3F5]"
-          }`}
+            }`}
           title="Satellite Imagery (Free, No API key)"
         >
           Satellite
@@ -1172,11 +1169,10 @@ function ChartCard({ chart, onExpand, expanded = false }) {
     if (typeof val === "boolean") {
       return (
         <span
-          className={`inline-block px-2 py-0.5 rounded text-[10.5px] font-semibold ${
-            val
+          className={`inline-block px-2 py-0.5 rounded text-[10.5px] font-semibold ${val
               ? "bg-[#10B981]/15 text-[#34D399] border border-[#10B981]/25"
               : "bg-[#EF4444]/15 text-[#F87171] border border-[#EF4444]/25"
-          }`}
+            }`}
         >
           {val ? "Yes" : "No"}
         </span>
@@ -1223,11 +1219,10 @@ function ChartCard({ chart, onExpand, expanded = false }) {
           {type !== "table" && (
             <button
               onClick={() => setView((v) => (v === "chart" ? "table" : "chart"))}
-              className={`p-1.5 rounded-md transition-colors ${
-                view === "table"
+              className={`p-1.5 rounded-md transition-colors ${view === "table"
                   ? "bg-[#1E2534] text-[#10B981]"
                   : "text-[#8C93A0] hover:text-[#F1F3F5] hover:bg-[#1E2534]/50"
-              }`}
+                }`}
               title={view === "chart" ? "View data table" : "View chart"}
             >
               {view === "chart" ? (
@@ -1260,9 +1255,8 @@ function ChartCard({ chart, onExpand, expanded = false }) {
           ) : (
             <div className="w-full rounded-lg border border-[#272B35] bg-[#10131B] shadow-sm overflow-hidden flex flex-col">
               <div
-                className={`w-full overflow-auto ${
-                  expanded ? "max-h-[620px]" : "max-h-[460px]"
-                } scrollbar-thin scrollbar-thumb-[#272B35] scrollbar-track-transparent`}
+                className={`w-full overflow-auto ${expanded ? "max-h-[620px]" : "max-h-[460px]"
+                  } scrollbar-thin scrollbar-thumb-[#272B35] scrollbar-track-transparent`}
               >
                 <table className="w-full min-w-[500px] text-[13px] border-collapse text-left">
                   <thead className="bg-[#161922] sticky top-0 z-10 border-b border-[#272B35] text-[11.5px] uppercase font-semibold tracking-wider text-[#9CA3AF]">
@@ -1277,15 +1271,13 @@ function ChartCard({ chart, onExpand, expanded = false }) {
                           <th
                             key={col}
                             onClick={() => handleSort(col)}
-                            className={`px-4 py-3 font-semibold whitespace-nowrap text-[#9CA3AF] cursor-pointer hover:text-[#F3F4F6] hover:bg-[#1E2534]/60 select-none transition-colors group/th ${
-                              isNum ? "text-right" : "text-left"
-                            }`}
+                            className={`px-4 py-3 font-semibold whitespace-nowrap text-[#9CA3AF] cursor-pointer hover:text-[#F3F4F6] hover:bg-[#1E2534]/60 select-none transition-colors group/th ${isNum ? "text-right" : "text-left"
+                              }`}
                             title="Click to sort"
                           >
                             <div
-                              className={`inline-flex items-center gap-1.5 ${
-                                isNum ? "flex-row-reverse" : "flex-row"
-                              }`}
+                              className={`inline-flex items-center gap-1.5 ${isNum ? "flex-row-reverse" : "flex-row"
+                                }`}
                             >
                               <span>{formatHeader(col)}</span>
                               {isSorted ? (
@@ -1318,11 +1310,10 @@ function ChartCard({ chart, onExpand, expanded = false }) {
                           return (
                             <td
                               key={col}
-                              className={`px-4 py-2.5 whitespace-nowrap ${
-                                isNum
+                              className={`px-4 py-2.5 whitespace-nowrap ${isNum
                                   ? "text-right tabular-nums font-mono text-[12.5px] text-[#F3F4F6]"
                                   : "text-left text-[#D1D5DB]"
-                              }`}
+                                }`}
                               title={val !== null && val !== undefined ? String(val) : ""}
                             >
                               {renderCellContent(val, col)}
@@ -1370,126 +1361,126 @@ function ChartCard({ chart, onExpand, expanded = false }) {
               Table view
             </div>
           ) : type === "line" ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data} margin={MARGIN}>
-              <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey={xKey} {...X_AXIS_PROPS} />
-              <YAxis {...Y_AXIS_PROPS} />
-              <Tooltip content={<ChartTooltip />} />
-              <Legend {...LEGEND_PROPS} />
-              {dataKeys.map((dk, i) => (
-                <Line
-                  key={dk.key}
-                  type="monotone"
-                  dataKey={dk.key}
-                  name={dk.name || dk.key}
-                  stroke={dk.color || COLORS[i % COLORS.length]}
-                  strokeWidth={2.2}
-                  dot={{ fill: dk.color || COLORS[i % COLORS.length], r: 2.5, strokeWidth: 0 }}
-                  activeDot={{ r: 4.5, stroke: "#151921", strokeWidth: 2 }}
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-        ) : type === "area" ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={MARGIN}>
-              <defs>
-                {dataKeys.map((dk, i) => {
-                  const c = dk.color || COLORS[i % COLORS.length];
-                  return (
-                    <linearGradient
-                      key={`g_${dk.key}`}
-                      id={`g_${dk.key}`}
-                      x1="0"
-                      y1="0"
-                      x2="0"
-                      y2="1"
-                    >
-                      <stop offset="5%" stopColor={c} stopOpacity={0.24} />
-                      <stop offset="95%" stopColor={c} stopOpacity={0.01} />
-                    </linearGradient>
-                  );
-                })}
-              </defs>
-              <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey={xKey} {...X_AXIS_PROPS} />
-              <YAxis {...Y_AXIS_PROPS} />
-              <Tooltip content={<ChartTooltip />} />
-              <Legend {...LEGEND_PROPS} />
-              {dataKeys.map((dk, i) => {
-                const c = dk.color || COLORS[i % COLORS.length];
-                return (
-                  <Area
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data} margin={MARGIN}>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis dataKey={xKey} {...X_AXIS_PROPS} />
+                <YAxis {...Y_AXIS_PROPS} />
+                <Tooltip content={<ChartTooltip />} />
+                <Legend {...LEGEND_PROPS} />
+                {dataKeys.map((dk, i) => (
+                  <Line
                     key={dk.key}
                     type="monotone"
                     dataKey={dk.key}
                     name={dk.name || dk.key}
-                    stroke={c}
-                    strokeWidth={2}
-                    fillOpacity={1}
-                    fill={`url(#g_${dk.key})`}
-                  />
-                );
-              })}
-            </AreaChart>
-          </ResponsiveContainer>
-        ) : type === "pie" || type === "donut" ? (
-          <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
-            <PieChart>
-              <Tooltip content={<ChartTooltip />} />
-              <Legend {...LEGEND_PROPS} />
-              <Pie
-                data={cleanPieData}
-                dataKey="value"
-                nameKey="name"
-                cx="50%"
-                cy="44%"
-                innerRadius={type === "donut" ? "48%" : 0}
-                outerRadius="75%"
-                paddingAngle={2}
-                stroke="#151921"
-                strokeWidth={2}
-              >
-                {cleanPieData.map((_, index) => (
-                  <Cell
-                    key={`c-${index}`}
-                    fill={COLORS[index % COLORS.length]}
+                    stroke={dk.color || COLORS[i % COLORS.length]}
+                    strokeWidth={2.2}
+                    dot={{ fill: dk.color || COLORS[i % COLORS.length], r: 2.5, strokeWidth: 0 }}
+                    activeDot={{ r: 4.5, stroke: "#151921", strokeWidth: 2 }}
                   />
                 ))}
-              </Pie>
-            </PieChart>
-          </ResponsiveContainer>
-        ) : type === "map" ? (
-          <MapChart chart={chart} height={h} />
-        ) : type === "slider" ? (
-          <SliderChart chart={chart} height={h} />
-        ) : (
-          /* Default: Bar */
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={MARGIN}>
-              <CartesianGrid {...GRID_PROPS} />
-              <XAxis dataKey={xKey} {...X_AXIS_PROPS} />
-              <YAxis {...Y_AXIS_PROPS} />
-              <Tooltip content={<ChartTooltip />} />
-              <Legend {...LEGEND_PROPS} />
-              {dataKeys.map((dk, i) => (
-                <Bar
-                  key={dk.key}
-                  dataKey={dk.key}
-                  name={dk.name || dk.key}
-                  fill={dk.color || COLORS[i % COLORS.length]}
-                  radius={[3, 3, 0, 0]}
-                  maxBarSize={36}
-                />
-              ))}
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-    )}
-  </div>
-);
+              </LineChart>
+            </ResponsiveContainer>
+          ) : type === "area" ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data} margin={MARGIN}>
+                <defs>
+                  {dataKeys.map((dk, i) => {
+                    const c = dk.color || COLORS[i % COLORS.length];
+                    return (
+                      <linearGradient
+                        key={`g_${dk.key}`}
+                        id={`g_${dk.key}`}
+                        x1="0"
+                        y1="0"
+                        x2="0"
+                        y2="1"
+                      >
+                        <stop offset="5%" stopColor={c} stopOpacity={0.24} />
+                        <stop offset="95%" stopColor={c} stopOpacity={0.01} />
+                      </linearGradient>
+                    );
+                  })}
+                </defs>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis dataKey={xKey} {...X_AXIS_PROPS} />
+                <YAxis {...Y_AXIS_PROPS} />
+                <Tooltip content={<ChartTooltip />} />
+                <Legend {...LEGEND_PROPS} />
+                {dataKeys.map((dk, i) => {
+                  const c = dk.color || COLORS[i % COLORS.length];
+                  return (
+                    <Area
+                      key={dk.key}
+                      type="monotone"
+                      dataKey={dk.key}
+                      name={dk.name || dk.key}
+                      stroke={c}
+                      strokeWidth={2}
+                      fillOpacity={1}
+                      fill={`url(#g_${dk.key})`}
+                    />
+                  );
+                })}
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : type === "pie" || type === "donut" ? (
+            <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
+              <PieChart>
+                <Tooltip content={<ChartTooltip />} />
+                <Legend {...LEGEND_PROPS} />
+                <Pie
+                  data={cleanPieData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="44%"
+                  innerRadius={type === "donut" ? "48%" : 0}
+                  outerRadius="75%"
+                  paddingAngle={2}
+                  stroke="#151921"
+                  strokeWidth={2}
+                >
+                  {cleanPieData.map((_, index) => (
+                    <Cell
+                      key={`c-${index}`}
+                      fill={COLORS[index % COLORS.length]}
+                    />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+          ) : type === "map" ? (
+            <MapChart chart={chart} height={h} />
+          ) : type === "slider" ? (
+            <SliderChart chart={chart} height={h} />
+          ) : (
+            /* Default: Bar */
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={data} margin={MARGIN}>
+                <CartesianGrid {...GRID_PROPS} />
+                <XAxis dataKey={xKey} {...X_AXIS_PROPS} />
+                <YAxis {...Y_AXIS_PROPS} />
+                <Tooltip content={<ChartTooltip />} />
+                <Legend {...LEGEND_PROPS} />
+                {dataKeys.map((dk, i) => (
+                  <Bar
+                    key={dk.key}
+                    dataKey={dk.key}
+                    name={dk.name || dk.key}
+                    fill={dk.color || COLORS[i % COLORS.length]}
+                    radius={[3, 3, 0, 0]}
+                    maxBarSize={36}
+                  />
+                ))}
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ─── Chart Expand Modal ─── */
@@ -2278,20 +2269,18 @@ export default function InteractiveDashboard({ spec }) {
               <button
                 key={p.id || idx}
                 onClick={() => setActivePageIndex(idx)}
-                className={`pb-2.5 text-[12.5px] font-medium transition-all whitespace-nowrap border-b-2 -mb-px flex items-center gap-1.5 cursor-pointer ${
-                  active
+                className={`pb-2.5 text-[12.5px] font-medium transition-all whitespace-nowrap border-b-2 -mb-px flex items-center gap-1.5 cursor-pointer ${active
                     ? "text-[#10B981] border-[#10B981] font-semibold"
                     : "text-[#8C93A0] border-transparent hover:text-[#CBD5E1]"
-                }`}
+                  }`}
               >
                 <span>{p.name}</span>
                 {Array.isArray(p.charts) && p.charts.length > 0 && (
                   <span
-                    className={`text-[9.5px] px-1.5 py-0.2 rounded-full font-mono ${
-                      active
+                    className={`text-[9.5px] px-1.5 py-0.2 rounded-full font-mono ${active
                         ? "bg-[#10B981]/15 text-[#34D399]"
                         : "bg-[#1E2534] text-[#64748B]"
-                    }`}
+                      }`}
                   >
                     {p.charts.length}
                   </span>
@@ -2305,19 +2294,18 @@ export default function InteractiveDashboard({ spec }) {
       {/* ── KPIs Row ── */}
       {kpis.length > 0 && (
         <div
-          className={`grid gap-3.5 ${
-            kpis.length === 1
+          className={`grid gap-3.5 ${kpis.length === 1
               ? "grid-cols-1 max-w-sm"
               : kpis.length === 2
-              ? "grid-cols-1 sm:grid-cols-2"
-              : kpis.length === 3
-              ? "grid-cols-1 sm:grid-cols-3"
-              : kpis.length === 4
-              ? "grid-cols-2 lg:grid-cols-4"
-              : kpis.length === 5
-              ? "grid-cols-2 sm:grid-cols-3 lg:grid-cols-5"
-              : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-6"
-          }`}
+                ? "grid-cols-1 sm:grid-cols-2"
+                : kpis.length === 3
+                  ? "grid-cols-1 sm:grid-cols-3"
+                  : kpis.length === 4
+                    ? "grid-cols-2 lg:grid-cols-4"
+                    : kpis.length === 5
+                      ? "grid-cols-2 sm:grid-cols-3 lg:grid-cols-5"
+                      : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-6"
+            }`}
         >
           {kpis.map((kpi, idx) => {
             const changeStr = typeof kpi.change === "string" ? kpi.change.trim() : "";
@@ -2328,9 +2316,8 @@ export default function InteractiveDashboard({ spec }) {
             return (
               <div
                 key={idx}
-                className={`bg-[#151921] border border-[#222734] rounded-lg p-3.5 sm:p-4 hover:border-[#2C3547] transition-all shadow-xs flex flex-col justify-between ${
-                  isFifthOfFive ? "col-span-2 sm:col-span-1 lg:col-span-1" : ""
-                }`}
+                className={`bg-[#151921] border border-[#222734] rounded-lg p-3.5 sm:p-4 hover:border-[#2C3547] transition-all shadow-xs flex flex-col justify-between ${isFifthOfFive ? "col-span-2 sm:col-span-1 lg:col-span-1" : ""
+                  }`}
               >
                 <div className="text-[11px] text-[#94A3B8] font-semibold uppercase tracking-wider truncate mb-1">
                   {kpi.label}
@@ -2341,13 +2328,12 @@ export default function InteractiveDashboard({ spec }) {
                 {changeStr ? (
                   <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                     <span
-                      className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10.5px] font-semibold border ${
-                        isPos
+                      className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10.5px] font-semibold border ${isPos
                           ? "text-[#10B981] bg-[#10B981]/10 border-[#10B981]/25"
                           : isNeg
-                          ? "text-[#EF4444] bg-[#EF4444]/10 border-[#EF4444]/25"
-                          : "text-[#94A3B8] bg-[#1E2534] border-[#2A3446]"
-                      }`}
+                            ? "text-[#EF4444] bg-[#EF4444]/10 border-[#EF4444]/25"
+                            : "text-[#94A3B8] bg-[#1E2534] border-[#2A3446]"
+                        }`}
                     >
                       {isPos ? (
                         <ArrowUpRight size={11} />
@@ -2451,9 +2437,8 @@ export default function InteractiveDashboard({ spec }) {
               <div
                 key={chart.id || idx}
                 id={`chart-card-${chart.id || idx}`}
-                className={`bg-[#151921] border border-[#222734] rounded-lg p-4 sm:p-4.5 hover:border-[#2C3547] transition-all shadow-xs ${
-                  isTable ? "col-span-full" : ""
-                }`}
+                className={`bg-[#151921] border border-[#222734] rounded-lg p-4 sm:p-4.5 hover:border-[#2C3547] transition-all shadow-xs ${isTable ? "col-span-full" : ""
+                  }`}
               >
                 <ChartCard
                   chart={chart}
