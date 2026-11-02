@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { AI_API_URL } from "../config/api";
 import { reconcileSourceWithServer, DEFAULT_SOURCE } from "../lib/dataSourceSync";
-import { authHeaders } from "../lib/auth";
+import { authHeaders, getStoredAuth } from "../lib/auth";
 
 export default function DataSourceModal({ isOpen, onClose, activeSource, onSelectSource }) {
   const [tab, setTab] = useState("connect");
@@ -137,6 +137,21 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
       setError("Please select at least one CSV or Excel file to upload.");
       return;
     }
+
+    const auth = getStoredAuth();
+    if (!auth?.token) {
+      setError("You are not logged in or your session has expired. Please log in first.");
+      return;
+    }
+
+    const totalSize = files.reduce((acc, f) => acc + (f.size || 0), 0);
+    if (totalSize > 4.5 * 1024 * 1024) {
+      setError(
+        `Total file size (${(totalSize / (1024 * 1024)).toFixed(1)} MB) exceeds Vercel's 4.5 MB serverless limit for direct uploads. Please upload files under 4.5 MB or connect via database URL.`
+      );
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setSuccessMsg(null);
@@ -151,8 +166,10 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
         formData.append("custom_name", datasetName.trim());
       }
 
+      // Do NOT specify "Content-Type" manually: Axios/browser will automatically
+      // set "multipart/form-data; boundary=..." which is required for multipart parsing.
       const res = await axios.post(`${AI_API_URL}/data-sources/upload`, formData, {
-        headers: authHeaders({ "Content-Type": "multipart/form-data" }),
+        headers: authHeaders(),
       });
 
       if (res.data?.data_source) {
@@ -167,7 +184,17 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
         }, 1200);
       }
     } catch (err) {
-      setError(err.response?.data?.error || "Failed to process files. Please verify the file formats.");
+      const serverError =
+        err.response?.data?.error ||
+        err.response?.data?.detail ||
+        (err.response?.status === 401
+          ? "Session expired or invalid. Please re-login."
+          : err.response?.status === 413
+          ? "File exceeds serverless payload limit (4.5 MB)."
+          : err.message === "Network Error"
+          ? "Network error or CORS issue. Please check your backend connection."
+          : err.message);
+      setError(serverError || "Failed to process files. Please verify the file formats.");
     } finally {
       setLoading(false);
     }

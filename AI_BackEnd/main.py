@@ -44,16 +44,6 @@ origins = [
     "http://127.0.0.1:9001",
 ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://.*\.vercel\.app",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 def _path_requires_auth(path: str) -> bool:
     normalized = path.rstrip("/") or "/"
     if normalized in ("/query", "/query/stream", "/models"):
@@ -75,6 +65,18 @@ async def jwt_auth_middleware(request: Request, call_next):
     request.state.auth_user = auth_user
     request.state.bearer_token = bearer
     return await call_next(request)
+
+
+# CORSMiddleware must be added AFTER all other middlewares so it is the outermost
+# layer and attaches Access-Control-Allow-Origin to all responses (including 401/403/500 errors).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://.*\.vercel\.app",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ConnectDbRequest(BaseModel):
