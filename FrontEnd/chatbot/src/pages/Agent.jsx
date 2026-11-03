@@ -45,7 +45,12 @@ import {
   saveChatSession,
   deleteChatSession,
   clearAllChats,
-  generateChatTitle
+  generateChatTitle,
+  fetchUserRecentChats,
+  getSavedActiveSource,
+  saveActiveSource,
+  getSavedActiveSession,
+  saveActiveSession,
 } from "../lib/chatStorage";
 import { normalizeQueryResponse } from "../types/agentApi";
 import {
@@ -80,6 +85,9 @@ function normalizeVisualizationUrl(imageUrl) {
 
   return trimmed;
 }
+
+/* ─── Active background streams registry: Map<sessionId, StreamState> ─── */
+const activeStreams = new Map();
 
 /* ─── Agent label helper ─── */
 function agentLabel(agent) {
@@ -349,32 +357,24 @@ const PROMPT_SUGGESTIONS = [
    ════════════════════════════════════════════════════════════════ */
 function ChatView({
   activeSource,
-  onSelectSource,
   onOpenSourceModal,
   selectedModel,
   messages,
-  setMessages,
   currentChatId,
-  setCurrentChatId,
-  onSaveChatSession,
   onNewChat,
   isSidebarOpen,
   onToggleSidebar,
+  sendMessage,
+  stopGeneration,
+  isStreaming,
 }) {
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const chatContainerRef = useRef(null);
-  const abortControllerRef = useRef(null);
-  const userStoppedRef = useRef(false);
-  const currentChatIdRef = useRef(currentChatId);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
-  // Keep ref in sync so streaming callbacks always see the latest chat ID
-  useEffect(() => {
-    currentChatIdRef.current = currentChatId;
-  }, [currentChatId]);
+  const loading = Boolean(isStreaming || messages.some((m) => m.isLoading));
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -403,290 +403,30 @@ function ChatView({
     }
   }, [input]);
 
-  const handleResetChat = () => {
-    onNewChat();
-  };
-
-  const stopGeneration = () => {
-    userStoppedRef.current = true;
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    setLoading(false);
-    setMessages((prev) => {
-      const filtered = prev.filter((msg) => !msg.isLoading);
-      const finalMessages = [...filtered, { role: "AI_Message", content: "Generation stopped." }];
-      const sid = currentChatId || `chat_${Date.now()}`;
-      if (!currentChatId) setCurrentChatId(sid);
-      const firstUser = finalMessages.find((m) => m.role === "User_Message");
-      const title = generateChatTitle(firstUser?.content);
-      onSaveChatSession({
-        id: sid,
-        title,
-        createdAt: new Date().toISOString(),
-        source: activeSource,
-        modelId: selectedModel,
-        messages: finalMessages,
-        contextMessages: JSON.parse(localStorage.getItem("messages")) || [],
-      });
-      return finalMessages;
-    });
-  };
-
-  const sendMessage = async (customPrompt) => {
+  const handleSend = (customPrompt) => {
     const textToSend = typeof customPrompt === "string" ? customPrompt : input;
-    if (!textToSend.trim() || loading) return;
-
-    const sessionId = currentChatId || `chat_${Date.now()}`;
-    if (!currentChatId) {
-      setCurrentChatId(sessionId);
-    }
-
-    const newMessage = { role: "User_Message", content: textToSend };
-    let storedMessages =
-      JSON.parse(localStorage.getItem("messages")) || ["Context: "];
-    storedMessages.push(`${newMessage.role}: ${newMessage.content};`);
-    localStorage.setItem("messages", JSON.stringify(storedMessages));
-
-    setMessages((prev) => [
-      ...prev,
-      newMessage,
-      {
-        role: "AI_Message",
-        content: "",
-        isLoading: true,
-        streaming: true,
-        thinking: "",
-        steps: [],
-        streamStatus: "Connecting…",
-      },
-    ]);
+    if (!textToSend || !textToSend.trim() || loading) return;
     setInput("");
     if (inputRef.current) {
       inputRef.current.style.height = "auto";
     }
-    setLoading(true);
+    sendMessage(textToSend);
     inputRef.current?.focus();
+  };
 
-    userStoppedRef.current = false;
-    abortControllerRef.current = new AbortController();
-
-    // Early-save the session with the user message so the "else" branch
-    // (when the user navigates away during streaming) can find it.
-    const earlyMessages = [...messages, newMessage];
-    const earlyTitle = generateChatTitle(textToSend);
-    onSaveChatSession({
-      id: sessionId,
-      title: earlyTitle,
-      createdAt: new Date().toISOString(),
-      source: activeSource,
-      modelId: selectedModel,
-      messages: earlyMessages,
-      contextMessages: storedMessages,
-    });
-
-    try {
-      const session = getStoredAuth();
-      if (!session) {
-        setMessages((prev) => {
-          const filtered = prev.filter((msg) => !msg.isLoading);
-          return [...filtered, { role: "AI_Message", content: "Please log in first to use the agent." }];
-        });
-        setLoading(false);
-        return;
-      }
-
-      const payLoad = {
-        question: JSON.parse(localStorage.getItem("messages")).join(" "),
-        source_id: activeSource?.source_id,
-        model_id: selectedModel || null,
-      };
-      let streamThinking = "";
-      let streamSteps = [];
-      let streamStatus = "Working…";
-
-      const mergeThinking = (finalThinking, live) => {
-        if (!finalThinking) return live;
-        if (!live) return finalThinking;
-        return live.includes(finalThinking) ? live : `${live}\n\n---\n\n${finalThinking}`;
-      };
-
-      let payload = null;
-
-      await streamAgentQuery(AI_API_URL, payLoad, {
-        signal: abortControllerRef.current.signal,
-        headers: authHeaders(),
-        onEvent: (type, data) => {
-          if (type === "thinking_delta" && data.text) {
-            streamThinking += data.text;
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.isLoading
-                  ? {
-                    ...msg,
-                    thinking: streamThinking,
-                    streamStatus: data.phase === "router" ? "Routing…" : streamStatus,
-                  }
-                  : msg
-              )
-            );
-          } else if (type === "step" && data.step) {
-            streamSteps = [...streamSteps, data.step];
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.isLoading
-                  ? {
-                    ...msg,
-                    steps: streamSteps,
-                    streamStatus: `${data.step.label}…`,
-                  }
-                  : msg
-              )
-            );
-          } else if (type === "status" && data.text) {
-            streamStatus = data.text;
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.isLoading ? { ...msg, streamStatus: data.text } : msg
-              )
-            );
-          } else if (type === "done") {
-            payload = normalizeQueryResponse(data);
-          } else if (type === "error") {
-            console.error("[stream error event received]", data);
-            if (data.error === "cancelled") {
-              const cancelled = new Error("cancelled");
-              cancelled.name = "AbortError";
-              throw cancelled;
-            }
-            const errorMsg = data.error || data.detail || data.raw || (typeof data === "string" ? data : JSON.stringify(data));
-            throw new Error(errorMsg || "Stream failed");
-          }
-        },
-      });
-
-      if (userStoppedRef.current) {
-        return;
-      }
-
-      if (!payload) {
-        throw new Error("No response from agent stream");
-      }
-
-      const resolvedSource = sourceFromQueryResponse(payload);
-      const sessionSource = resolvedSource || activeSource;
-      if (resolvedSource && onSelectSource) {
-        onSelectSource(resolvedSource);
-      }
-
-      const imageUrl = normalizeVisualizationUrl(payload.image);
-      const aiMessage = {
-        role: "AI_Message",
-        content: payload.answer,
-        agent: payload.agent,
-        source_name: payload.source_name,
-        thinking: mergeThinking(payload.thinking, streamThinking),
-        steps: payload.steps?.length ? payload.steps : streamSteps,
-        ...(imageUrl ? { image: imageUrl } : {}),
-        ...(payload.dashboard ? { dashboard: payload.dashboard } : {}),
-      };
-
-      let updatedMessages =
-        JSON.parse(localStorage.getItem("messages")) || [];
-      updatedMessages.push(`${aiMessage.role}: ${aiMessage.content};`);
-      localStorage.setItem("messages", JSON.stringify(updatedMessages));
-
-      // Check if user has navigated away from this chat while streaming
-      const stillOnSameChat =
-        currentChatIdRef.current === sessionId ||
-        currentChatIdRef.current === null;
-
-      if (stillOnSameChat) {
-        setMessages((prev) => {
-          const filtered = prev.filter((msg) => !msg.isLoading);
-          const finalMessages = [...filtered, aiMessage];
-
-          // Auto-save to recent chats
-          const firstUser = finalMessages.find((m) => m.role === "User_Message");
-          const title = generateChatTitle(firstUser?.content);
-          onSaveChatSession({
-            id: sessionId,
-            title,
-            createdAt: new Date().toISOString(),
-            source: sessionSource,
-            modelId: selectedModel,
-            messages: finalMessages,
-            contextMessages: updatedMessages,
-          });
-
-          return finalMessages;
-        });
-      } else {
-        // User navigated away — save the completed response to the original
-        // session in storage (so it's visible when they return) but do NOT
-        // overwrite the current on-screen messages.
-        // Reconstruct the session from what was previously saved in chat storage.
-        const existingSession = getRecentChats().find((c) => c.id === sessionId);
-        const previousMessages = existingSession?.messages || [];
-        // Remove any leftover loading placeholders and append the real AI answer
-        const cleanPrev = previousMessages.filter((m) => !m.isLoading);
-        const finalMessages = [...cleanPrev, aiMessage];
-        const firstUser = finalMessages.find((m) => m.role === "User_Message");
-        const title = generateChatTitle(firstUser?.content);
-        onSaveChatSession({
-          id: sessionId,
-          title,
-          createdAt: new Date().toISOString(),
-          source: sessionSource,
-          modelId: selectedModel,
-          messages: finalMessages,
-          contextMessages: updatedMessages,
-        });
-      }
-    } catch (err) {
-      if (err.name === "AbortError" || axios.isCancel(err)) {
-        return;
-      }
-      console.error("[Agent sendMessage error]:", err);
-      const displayError = err.message || err.response?.data?.error || "Please try again.";
-      setMessages((prev) => {
-        const filtered = prev.filter((msg) => !msg.isLoading);
-        const finalMessages = [
-          ...filtered,
-          {
-            role: "AI_Message",
-            content: `AI Error: ${displayError}`,
-          },
-        ];
-
-        // Save session on error as well
-        const firstUser = finalMessages.find((m) => m.role === "User_Message");
-        const title = generateChatTitle(firstUser?.content);
-        onSaveChatSession({
-          id: sessionId,
-          title,
-          createdAt: new Date().toISOString(),
-          source: activeSource,
-          modelId: selectedModel,
-          messages: finalMessages,
-          contextMessages: JSON.parse(localStorage.getItem("messages")) || [],
-        });
-
-        return finalMessages;
-      });
-    } finally {
-      setLoading(false);
-      abortControllerRef.current = null;
-    }
+  const handleStop = () => {
+    stopGeneration(currentChatId);
+    inputRef.current?.focus();
   };
 
   const handleKeyPress = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage();
+      handleSend();
     }
   };
+
+
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -716,7 +456,7 @@ function ChatView({
               {PROMPT_SUGGESTIONS.map((card, idx) => (
                 <button
                   key={idx}
-                  onClick={() => sendMessage(card.prompt)}
+                  onClick={() => handleSend(card.prompt)}
                   disabled={loading}
                   className="group relative p-4 rounded-xl bg-[#151820] border border-[#272B35] hover:border-[#3B82F6]/60 hover:bg-[#181C26] transition-all duration-150 flex flex-col justify-between text-left disabled:opacity-50 cursor-pointer shadow-sm"
                 >
@@ -852,7 +592,7 @@ function ChatView({
             style={{ maxHeight: "200px" }}
           />
           <button
-            onClick={() => (loading ? stopGeneration() : sendMessage())}
+            onClick={() => (loading ? handleStop() : handleSend())}
             disabled={!input.trim() && !loading}
             className="flex items-center justify-center w-9 h-9 flex-shrink-0 rounded-lg bg-[#2563EB] text-white hover:bg-[#1D4ED8] disabled:opacity-40 disabled:cursor-not-allowed transition-colors mb-[1px]"
             title={loading ? "Stop generation" : "Send message"}
@@ -876,8 +616,9 @@ function ChatView({
 export default function App() {
   const [page, setPage] = useState("agent");
   const [isSourceModalOpen, setIsSourceModalOpen] = useState(false);
-  const [messages, setMessages] = useState([]);
-  const [currentChatId, setCurrentChatId] = useState(null);
+  const [initialSession] = useState(() => getSavedActiveSession());
+  const [messages, setMessages] = useState(() => initialSession.messages || []);
+  const [currentChatId, setCurrentChatId] = useState(() => initialSession.chatId || null);
   const [recentChats, setRecentChats] = useState(() => getRecentChats());
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
     try {
@@ -900,19 +641,7 @@ export default function App() {
     });
   };
 
-  const [activeSource, setActiveSource] = useState(() => {
-    try {
-      return (
-        JSON.parse(localStorage.getItem("activeSource")) || {
-          source_id: "default",
-          name: "Default Database",
-          type: "database",
-        }
-      );
-    } catch {
-      return { source_id: "default", name: "Default Database", type: "database" };
-    }
-  });
+  const [activeSource, setActiveSource] = useState(() => getSavedActiveSource());
 
   // Model selection state
   const [availableModels, setAvailableModels] = useState([]);
@@ -926,6 +655,17 @@ export default function App() {
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const modelDropdownRef = useRef(null);
   const liveChatIdRef = useRef(null);
+  const [activeStreamIds, setActiveStreamIds] = useState(() => new Set());
+  const currentChatIdRef = useRef(currentChatId);
+  const pageRef = useRef(page);
+
+  useEffect(() => {
+    currentChatIdRef.current = currentChatId;
+  }, [currentChatId]);
+
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
 
   const navigate = useNavigate();
 
@@ -979,11 +719,7 @@ export default function App() {
   const handleSelectSource = (source) => {
     const next = source?.source_id ? source : DEFAULT_SOURCE;
     setActiveSource(next);
-    try {
-      localStorage.setItem("activeSource", JSON.stringify(next));
-    } catch (e) {
-      console.error("Failed to save activeSource:", e);
-    }
+    saveActiveSource(next);
   };
 
   const syncActiveSourceWithServer = async (preferred) => {
@@ -1008,21 +744,379 @@ export default function App() {
   };
 
   useEffect(() => {
-    syncActiveSourceWithServer(
-      JSON.parse(localStorage.getItem("activeSource") || "null")
-    );
+    // If active messages are empty, but user has recent chats, restore latest chat session
+    const activeState = getSavedActiveSession();
+    if (activeState.messages && activeState.messages.length > 0) {
+      setMessages(activeState.messages);
+      if (activeState.chatId) setCurrentChatId(activeState.chatId);
+      if (activeState.contextMessages) {
+        localStorage.setItem("messages", JSON.stringify(activeState.contextMessages));
+      }
+    } else {
+      const storedChats = getRecentChats();
+      if (storedChats.length > 0 && !currentChatId) {
+        const latest = storedChats[0];
+        setCurrentChatId(latest.id);
+        setMessages(latest.messages || []);
+        if (latest.contextMessages) {
+          localStorage.setItem("messages", JSON.stringify(latest.contextMessages));
+        }
+        if (latest.source) {
+          handleSelectSource(latest.source);
+        }
+      }
+    }
+
+    const savedSource = getSavedActiveSource();
+    syncActiveSourceWithServer(savedSource);
+
+    fetchUserRecentChats().then((chats) => {
+      if (Array.isArray(chats) && chats.length > 0) {
+        setRecentChats(chats);
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSaveChatSession = (session) => {
     const updated = saveChatSession(session);
     setRecentChats(updated);
+    if (!currentChatId || session.id === currentChatId) {
+      saveActiveSession(
+        session.messages || [],
+        session.id,
+        session.contextMessages
+      );
+    }
   };
+
+  const sendMessage = async (textToSend) => {
+    if (!textToSend || !textToSend.trim()) return;
+
+    const sessionId = currentChatId || `chat_${Date.now()}`;
+    liveChatIdRef.current = sessionId;
+    if (!currentChatId) {
+      setCurrentChatId(sessionId);
+      currentChatIdRef.current = sessionId;
+    }
+
+    const newMessage = { role: "User_Message", content: textToSend };
+    let storedMessages = ["Context: "];
+    try {
+      storedMessages = JSON.parse(localStorage.getItem("messages")) || ["Context: "];
+    } catch (e) {}
+    storedMessages.push(`${newMessage.role}: ${newMessage.content};`);
+    localStorage.setItem("messages", JSON.stringify(storedMessages));
+
+    const loadingMessage = {
+      role: "AI_Message",
+      content: "",
+      isLoading: true,
+      streaming: true,
+      thinking: "",
+      steps: [],
+      streamStatus: "Connecting…",
+    };
+
+    const newMessages = [...messages, newMessage, loadingMessage];
+    setMessages(newMessages);
+
+    // Early-save session so it is preserved if the page is reloaded
+    const earlyMessages = [...messages, newMessage];
+    const earlyTitle = generateChatTitle(textToSend);
+    handleSaveChatSession({
+      id: sessionId,
+      title: earlyTitle,
+      createdAt: new Date().toISOString(),
+      source: activeSource,
+      modelId: selectedModel,
+      messages: earlyMessages,
+      contextMessages: storedMessages,
+    });
+
+    const abortController = new AbortController();
+    activeStreams.set(sessionId, {
+      sessionId,
+      abortController,
+      userStopped: false,
+      thinking: "",
+      steps: [],
+      streamStatus: "Connecting…",
+      messages: newMessages,
+      contextMessages: storedMessages,
+      source: activeSource,
+      modelId: selectedModel,
+    });
+    setActiveStreamIds((prev) => new Set(prev).add(sessionId));
+
+    try {
+      const session = getStoredAuth();
+      if (!session) {
+        const errorMessages = newMessages
+          .filter((msg) => !msg.isLoading)
+          .concat({ role: "AI_Message", content: "Please log in first to use the agent." });
+        if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+          setMessages(errorMessages);
+        }
+        activeStreams.delete(sessionId);
+        setActiveStreamIds((prev) => {
+          const next = new Set(prev);
+          next.delete(sessionId);
+          return next;
+        });
+        return;
+      }
+
+      const payLoad = {
+        question: storedMessages.join(" "),
+        source_id: activeSource?.source_id,
+        model_id: selectedModel || null,
+      };
+
+      let payload = null;
+
+      await streamAgentQuery(AI_API_URL, payLoad, {
+        signal: abortController.signal,
+        headers: authHeaders(),
+        onEvent: (type, data) => {
+          const stream = activeStreams.get(sessionId);
+          if (!stream || stream.userStopped) return;
+
+          if (type === "thinking_delta" && data.text) {
+            stream.thinking += data.text;
+            if (data.phase === "router") {
+              stream.streamStatus = "Routing…";
+            }
+            stream.messages = stream.messages.map((msg) =>
+              msg.isLoading
+                ? {
+                    ...msg,
+                    thinking: stream.thinking,
+                    streamStatus: stream.streamStatus,
+                  }
+                : msg
+            );
+            if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+              setMessages(stream.messages);
+            }
+          } else if (type === "step" && data.step) {
+            stream.steps = [...stream.steps, data.step];
+            stream.streamStatus = `${data.step.label}…`;
+            stream.messages = stream.messages.map((msg) =>
+              msg.isLoading
+                ? {
+                    ...msg,
+                    steps: stream.steps,
+                    streamStatus: stream.streamStatus,
+                  }
+                : msg
+            );
+            if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+              setMessages(stream.messages);
+            }
+          } else if (type === "status" && data.text) {
+            stream.streamStatus = data.text;
+            stream.messages = stream.messages.map((msg) =>
+              msg.isLoading ? { ...msg, streamStatus: stream.streamStatus } : msg
+            );
+            if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+              setMessages(stream.messages);
+            }
+          } else if (type === "done") {
+            payload = normalizeQueryResponse(data);
+          } else if (type === "error") {
+            console.error("[stream error event received]", data);
+            if (data.error === "cancelled") {
+              const cancelled = new Error("cancelled");
+              cancelled.name = "AbortError";
+              throw cancelled;
+            }
+            const errorMsg =
+              data.error ||
+              data.detail ||
+              data.raw ||
+              (typeof data === "string" ? data : JSON.stringify(data));
+            throw new Error(errorMsg || "Stream failed");
+          }
+        },
+      });
+
+      const stream = activeStreams.get(sessionId);
+      if (!stream || stream.userStopped) return;
+
+      if (!payload) {
+        throw new Error("No response from agent stream");
+      }
+
+      const mergeThinking = (finalThinking, live) => {
+        if (!finalThinking) return live;
+        if (!live) return finalThinking;
+        return live.includes(finalThinking) ? live : `${live}\n\n---\n\n${finalThinking}`;
+      };
+
+      const resolvedSource = sourceFromQueryResponse(payload);
+      const sessionSource = resolvedSource || stream.source || activeSource;
+      if (
+        resolvedSource &&
+        pageRef.current === "agent" &&
+        currentChatIdRef.current === sessionId
+      ) {
+        handleSelectSource(resolvedSource);
+      }
+
+      const imageUrl = normalizeVisualizationUrl(payload.image);
+      const aiMessage = {
+        role: "AI_Message",
+        content: payload.answer,
+        agent: payload.agent,
+        source_name: payload.source_name,
+        thinking: mergeThinking(payload.thinking, stream.thinking),
+        steps: payload.steps?.length ? payload.steps : stream.steps,
+        ...(imageUrl ? { image: imageUrl } : {}),
+        ...(payload.dashboard ? { dashboard: payload.dashboard } : {}),
+      };
+
+      const finalMessages = stream.messages
+        .filter((msg) => !msg.isLoading)
+        .concat(aiMessage);
+
+      const updatedContext = [...(stream.contextMessages || ["Context: "])];
+      updatedContext.push(`${aiMessage.role}: ${aiMessage.content};`);
+
+      if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+        setMessages(finalMessages);
+        localStorage.setItem("messages", JSON.stringify(updatedContext));
+      }
+
+      const firstUser = finalMessages.find((m) => m.role === "User_Message");
+      const title = generateChatTitle(firstUser?.content);
+      handleSaveChatSession({
+        id: sessionId,
+        title,
+        createdAt: new Date().toISOString(),
+        source: sessionSource,
+        modelId: stream.modelId || selectedModel,
+        messages: finalMessages,
+        contextMessages: updatedContext,
+      });
+    } catch (err) {
+      if (err.name === "AbortError" || axios.isCancel(err)) {
+        return;
+      }
+      console.error("[Agent sendMessage error]:", err);
+      const stream = activeStreams.get(sessionId);
+      const prevList = stream?.messages || messages;
+      const displayError = err.message || err.response?.data?.error || "Please try again.";
+      const finalMessages = prevList
+        .filter((msg) => !msg.isLoading)
+        .concat({
+          role: "AI_Message",
+          content: `AI Error: ${displayError}`,
+        });
+
+      if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+        setMessages(finalMessages);
+      }
+
+      const firstUser = finalMessages.find((m) => m.role === "User_Message");
+      const title = generateChatTitle(firstUser?.content);
+      handleSaveChatSession({
+        id: sessionId,
+        title,
+        createdAt: new Date().toISOString(),
+        source: stream?.source || activeSource,
+        modelId: stream?.modelId || selectedModel,
+        messages: finalMessages,
+        contextMessages: stream?.contextMessages || [],
+      });
+    } finally {
+      activeStreams.delete(sessionId);
+      setActiveStreamIds((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
+      setRecentChats(getRecentChats());
+    }
+  };
+
+  const stopGeneration = (targetSessionId) => {
+    const sid = targetSessionId || currentChatId;
+    const stream = activeStreams.get(sid);
+    if (stream) {
+      stream.userStopped = true;
+      if (stream.abortController) {
+        stream.abortController.abort();
+      }
+      const finalMessages = stream.messages
+        .filter((m) => !m.isLoading)
+        .concat({ role: "AI_Message", content: "Generation stopped." });
+
+      if (pageRef.current === "agent" && currentChatIdRef.current === sid) {
+        setMessages(finalMessages);
+      }
+
+      const firstUser = finalMessages.find((m) => m.role === "User_Message");
+      const title = generateChatTitle(firstUser?.content);
+      handleSaveChatSession({
+        id: sid,
+        title,
+        createdAt: new Date().toISOString(),
+        source: stream.source || activeSource,
+        modelId: stream.modelId || selectedModel,
+        messages: finalMessages,
+        contextMessages: stream.contextMessages || [],
+      });
+
+      activeStreams.delete(sid);
+      setActiveStreamIds((prev) => {
+        const next = new Set(prev);
+        next.delete(sid);
+        return next;
+      });
+      setRecentChats(getRecentChats());
+    } else {
+      setMessages((prev) => {
+        const filtered = prev.filter((m) => !m.isLoading);
+        return [...filtered, { role: "AI_Message", content: "Generation stopped." }];
+      });
+    }
+  };
+
+  const isCurrentChatStreaming = Boolean(
+    (currentChatId && activeStreamIds.has(currentChatId)) ||
+    messages.some((m) => m.isLoading)
+  );
 
   const handleSelectChat = async (chat) => {
     // Save current chat as the live chat before switching
     if (currentChatId && messages.length > 0) {
       liveChatIdRef.current = currentChatId;
+    }
+
+    // If chat is currently streaming, restore its live stream state immediately
+    if (activeStreams.has(chat.id)) {
+      const stream = activeStreams.get(chat.id);
+      setCurrentChatId(stream.sessionId);
+      currentChatIdRef.current = stream.sessionId;
+      setMessages(stream.messages);
+      if (stream.contextMessages) {
+        localStorage.setItem("messages", JSON.stringify(stream.contextMessages));
+      }
+      saveActiveSession(
+        stream.messages,
+        stream.sessionId,
+        stream.contextMessages || ["Context: "]
+      );
+      if (stream.source) {
+        await syncActiveSourceWithServer(stream.source);
+      }
+      if (stream.modelId) {
+        setSelectedModel(stream.modelId);
+        localStorage.setItem("selectedModel", stream.modelId);
+      }
+      setPage("agent");
+      return;
     }
 
     // Re-read from storage in case a background streaming response has
@@ -1032,10 +1126,17 @@ export default function App() {
     setRecentChats(freshChats);
 
     setCurrentChatId(freshChat.id);
+    currentChatIdRef.current = freshChat.id;
     setMessages(freshChat.messages || []);
     if (freshChat.contextMessages) {
       localStorage.setItem("messages", JSON.stringify(freshChat.contextMessages));
     }
+    saveActiveSession(
+      freshChat.messages || [],
+      freshChat.id,
+      freshChat.contextMessages || ["Context: "]
+    );
+
     if (freshChat.source) {
       await syncActiveSourceWithServer(freshChat.source);
     } else {
@@ -1059,6 +1160,21 @@ export default function App() {
   }, []);
 
   const handleDeleteChat = (chatId) => {
+    if (activeStreams.has(chatId)) {
+      const stream = activeStreams.get(chatId);
+      if (stream.abortController) {
+        stream.abortController.abort();
+      }
+      activeStreams.delete(chatId);
+      setActiveStreamIds((prev) => {
+        const next = new Set(prev);
+        next.delete(chatId);
+        return next;
+      });
+    }
+    if (liveChatIdRef.current === chatId) {
+      liveChatIdRef.current = null;
+    }
     const updated = deleteChatSession(chatId);
     setRecentChats(updated);
     if (currentChatId === chatId) {
@@ -1067,29 +1183,83 @@ export default function App() {
   };
 
   const handleClearAllChats = () => {
+    for (const [id, stream] of activeStreams.entries()) {
+      if (stream.abortController) {
+        stream.abortController.abort();
+      }
+    }
+    activeStreams.clear();
+    setActiveStreamIds(new Set());
+    liveChatIdRef.current = null;
     clearAllChats();
     setRecentChats([]);
     handleNewChat();
   };
 
   const handleNewChat = () => {
-    liveChatIdRef.current = null;
+    if (currentChatId && messages.length > 0) {
+      liveChatIdRef.current = currentChatId;
+    }
     setCurrentChatId(null);
+    currentChatIdRef.current = null;
     setMessages([]);
     localStorage.setItem("messages", JSON.stringify(["Context: "]));
+    saveActiveSession([], null, ["Context: "]);
     setPage("agent");
   };
 
   const handleGoToCurrentChat = () => {
-    const targetId = liveChatIdRef.current;
+    // If there is an active stream, prioritize returning to it
+    const targetId =
+      (liveChatIdRef.current && activeStreams.has(liveChatIdRef.current) && liveChatIdRef.current) ||
+      (activeStreams.size > 0 ? activeStreams.keys().next().value : null) ||
+      liveChatIdRef.current;
+
     if (targetId) {
+      if (activeStreams.has(targetId)) {
+        const stream = activeStreams.get(targetId);
+        setCurrentChatId(stream.sessionId);
+        currentChatIdRef.current = stream.sessionId;
+        setMessages(stream.messages);
+        if (stream.contextMessages) {
+          localStorage.setItem("messages", JSON.stringify(stream.contextMessages));
+        }
+        saveActiveSession(
+          stream.messages,
+          stream.sessionId,
+          stream.contextMessages || ["Context: "]
+        );
+        if (stream.source) {
+          syncActiveSourceWithServer(stream.source);
+        }
+        if (stream.modelId) {
+          setSelectedModel(stream.modelId);
+          localStorage.setItem("selectedModel", stream.modelId);
+        }
+        setPage("agent");
+        return;
+      }
+
       const freshChats = getRecentChats();
       const liveChat = freshChats.find((c) => c.id === targetId);
       if (liveChat) {
         setCurrentChatId(liveChat.id);
+        currentChatIdRef.current = liveChat.id;
         setMessages(liveChat.messages || []);
         if (liveChat.contextMessages) {
           localStorage.setItem("messages", JSON.stringify(liveChat.contextMessages));
+        }
+        saveActiveSession(
+          liveChat.messages || [],
+          liveChat.id,
+          liveChat.contextMessages || ["Context: "]
+        );
+        if (liveChat.source) {
+          syncActiveSourceWithServer(liveChat.source);
+        }
+        if (liveChat.modelId) {
+          setSelectedModel(liveChat.modelId);
+          localStorage.setItem("selectedModel", liveChat.modelId);
         }
         setPage("agent");
         return;
@@ -1109,8 +1279,27 @@ export default function App() {
   })();
 
   const handleLogout = () => {
+    for (const [id, stream] of activeStreams.entries()) {
+      if (stream.abortController) {
+        stream.abortController.abort();
+      }
+    }
+    activeStreams.clear();
+    setActiveStreamIds(new Set());
+
+    // Preserve current active session and source before logging out
+    if (messages.length > 0) {
+      let ctx = ["Context: "];
+      try {
+        ctx = JSON.parse(localStorage.getItem("messages") || '["Context: "]');
+      } catch (e) {}
+      saveActiveSession(messages, currentChatId, ctx);
+    }
+    if (activeSource) {
+      saveActiveSource(activeSource);
+    }
+    // Remove authentication session ONLY
     localStorage.removeItem("user");
-    localStorage.removeItem("messages");
     localStorage.removeItem("admin");
     navigate("/");
   };
@@ -1302,6 +1491,7 @@ export default function App() {
               <div className="space-y-0.5">
                 {recentChats.map((chat) => {
                   const isActive = currentChatId === chat.id && page === "agent";
+                  const isChatStreaming = activeStreamIds.has(chat.id);
                   return (
                     <div
                       key={chat.id}
@@ -1313,11 +1503,18 @@ export default function App() {
                       title={chat.title}
                     >
                       <div className="flex items-center gap-2 min-w-0 flex-1 mr-1">
-                        <MessageSquare
-                          size={14}
-                          className={`flex-shrink-0 ${isActive ? "text-blue-400" : "text-[#6B7280] group-hover:text-[#9CA3AF]"
-                            }`}
-                        />
+                        {isChatStreaming ? (
+                          <Loader2
+                            size={14}
+                            className="flex-shrink-0 text-blue-400 animate-spin"
+                          />
+                        ) : (
+                          <MessageSquare
+                            size={14}
+                            className={`flex-shrink-0 ${isActive ? "text-blue-400" : "text-[#6B7280] group-hover:text-[#9CA3AF]"
+                              }`}
+                          />
+                        )}
                         <span className="truncate">{chat.title || "Conversation"}</span>
                       </div>
                       <button
@@ -1393,17 +1590,16 @@ export default function App() {
           <ChatView
             key={currentChatId || "new"}
             activeSource={activeSource}
-            onSelectSource={handleSelectSource}
             onOpenSourceModal={() => setIsSourceModalOpen(true)}
             selectedModel={selectedModel}
             messages={messages}
-            setMessages={setMessages}
             currentChatId={currentChatId}
-            setCurrentChatId={setCurrentChatId}
-            onSaveChatSession={handleSaveChatSession}
             onNewChat={handleNewChat}
             isSidebarOpen={isSidebarOpen}
             onToggleSidebar={toggleSidebar}
+            sendMessage={sendMessage}
+            stopGeneration={stopGeneration}
+            isStreaming={isCurrentChatStreaming}
           />
         ) : (
           <DataExplorer

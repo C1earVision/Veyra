@@ -264,7 +264,7 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
 
   const handleDeleteSource = async (e, source) => {
     e.stopPropagation();
-    if (source.source_id === "default") return;
+    if (source.source_id === "default" || source.is_global || source.name === "E commerce dataset") return;
     const label = source.name || source.source_id;
     if (
       !window.confirm(
@@ -595,8 +595,9 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
                 activeSources.map((source) => {
                   const isSelected = (activeSource?.source_id || "default") === source.source_id;
                   const isEditing = editingSourceId === source.source_id;
-                  const canRename = source.source_id !== "default";
-                  const canDelete = source.source_id !== "default";
+                  const isGlobal = Boolean(source.is_global || source.source_id === "default" || source.name === "E commerce dataset");
+                  const canRename = !isGlobal;
+                  const canDelete = !isGlobal;
                   const isDeleting = deleteLoadingId === source.source_id;
 
                   return (
@@ -676,6 +677,11 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
                                 >
                                   <Pencil size={12} />
                                 </button>
+                              )}
+                              {isGlobal && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                                  SHARED
+                                </span>
                               )}
                               {isSelected && (
                                 <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-500/20 text-blue-400 shrink-0">

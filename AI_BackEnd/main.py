@@ -5,7 +5,7 @@ from DB.agent_visualizations import get_visualization
 from starlette.responses import JSONResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 import asyncio
 import os
 from Utils.ModelLoader import is_rate_limit_error, extract_retry_delay, modelLoader
@@ -21,7 +21,12 @@ from Utils.jwt_auth import (
 )
 from Utils.sse import format_sse
 from schemas.query_models import QueryResponse
-from DB.DataSourceManager import data_source_manager
+from DB.DataSourceManager import (
+    data_source_manager,
+    is_production,
+    GLOBAL_DATASET_NAME,
+    GLOBAL_DATASET_SOURCE_ID,
+)
 from DB import supabase_storage
 import uuid
 load_dotenv()
@@ -50,7 +55,7 @@ def _path_requires_auth(path: str) -> bool:
     normalized = path.rstrip("/") or "/"
     if normalized in ("/query", "/query/stream", "/models"):
         return True
-    return normalized.startswith("/data-sources")
+    return normalized.startswith("/data-sources") or normalized.startswith("/chats")
 
 
 @app.middleware("http")
@@ -88,6 +93,10 @@ class ConnectDbRequest(BaseModel):
 
 class RenameSourceRequest(BaseModel):
     name: str
+
+
+class ChatSyncRequest(BaseModel):
+    chats: List[Dict[str, Any]]
 
 
 class PrepareUploadFile(BaseModel):
@@ -204,10 +213,12 @@ async def get_visualization_image(visualization_id: str):
 
 # Data source registration and schema introspection endpoints
 @app.post("/data-sources/connect")
-async def connect_database(request: ConnectDbRequest):
+async def connect_database(request: ConnectDbRequest, raw_req: Request):
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    owner_id = str(auth_user.customer_id) if (is_production() and auth_user) else None
     try:
         result = data_source_manager.register_database_connection(
-            request.connection_string, request.custom_name
+            request.connection_string, request.custom_name, owner_id=owner_id
         )
         return {"status": "ok", "data_source": result}
     except Exception as e:
@@ -215,7 +226,7 @@ async def connect_database(request: ConnectDbRequest):
 
 
 @app.post("/data-sources/prepare-upload")
-async def prepare_upload(request: PrepareUploadRequest):
+async def prepare_upload(request: PrepareUploadRequest, raw_req: Request):
     """
     If Supabase Storage is configured, generates direct signed upload URLs
     so large files upload straight from client browser to Supabase Storage,
@@ -248,12 +259,14 @@ async def prepare_upload(request: PrepareUploadRequest):
 
 
 @app.post("/data-sources/complete-upload")
-async def complete_upload(request: CompleteUploadRequest):
+async def complete_upload(request: CompleteUploadRequest, raw_req: Request):
     """
     Called after files are uploaded directly to Supabase Storage.
     Downloads the files in backend, creates the DuckDB dataset,
     persists it in Supabase, and removes the temp raw files.
     """
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    owner_id = str(auth_user.customer_id) if (is_production() and auth_user) else None
     try:
         files_data = []
         for file_item in request.files:
@@ -266,7 +279,7 @@ async def complete_upload(request: CompleteUploadRequest):
             files_data.append({"filename": file_item.filename, "content": content})
 
         result = data_source_manager.register_uploaded_files(
-            files_data, custom_name=request.custom_name
+            files_data, custom_name=request.custom_name, owner_id=owner_id
         )
 
         # Cleanup temp raw files in Supabase Storage
@@ -282,9 +295,12 @@ async def complete_upload(request: CompleteUploadRequest):
 
 @app.post("/data-sources/upload")
 async def upload_data_files(
+    raw_req: Request,
     files: List[UploadFile] = File(...),
     custom_name: Optional[str] = Form(None),
 ):
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    owner_id = str(auth_user.customer_id) if (is_production() and auth_user) else None
     try:
         files_data = []
         for file in files:
@@ -292,7 +308,7 @@ async def upload_data_files(
             files_data.append({"filename": file.filename, "content": content})
 
         result = data_source_manager.register_uploaded_files(
-            files_data, custom_name=custom_name
+            files_data, custom_name=custom_name, owner_id=owner_id
         )
         return {"status": "ok", "data_source": result}
     except Exception as e:
@@ -300,33 +316,55 @@ async def upload_data_files(
 
 
 @app.patch("/data-sources/{source_id}/rename")
-async def rename_data_source(source_id: str, request: RenameSourceRequest):
+async def rename_data_source(source_id: str, request: RenameSourceRequest, raw_req: Request):
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    user_id = str(auth_user.customer_id) if auth_user else None
     try:
-        result = data_source_manager.rename_source(source_id, request.name)
+        result = data_source_manager.rename_source(source_id, request.name, user_id=user_id)
         return {"status": "ok", "data_source": result}
     except Exception as e:
         return JSONResponse(status_code=400, content={"status": "error", "error": str(e)})
 
 
 @app.delete("/data-sources/{source_id}")
-async def delete_data_source(source_id: str):
+async def delete_data_source(source_id: str, raw_req: Request):
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    user_id = str(auth_user.customer_id) if auth_user else None
     try:
-        result = data_source_manager.delete_source(source_id)
+        result = data_source_manager.delete_source(source_id, user_id=user_id)
         return {"status": "ok", **result}
     except Exception as e:
         return JSONResponse(status_code=400, content={"status": "error", "error": str(e)})
 
 
 @app.get("/data-sources/active")
-async def get_active_data_sources():
+async def get_active_data_sources(raw_req: Request):
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    user_id = str(auth_user.customer_id) if auth_user else None
+    prod = is_production()
+
     sources_summary = []
     for s_id, s in data_source_manager.sources.items():
+        is_global = bool(
+            s.get("is_global")
+            or s_id == GLOBAL_DATASET_SOURCE_ID
+            or s.get("name") == GLOBAL_DATASET_NAME
+        )
+        owner_id = s.get("owner_id")
+
+        if prod and user_id:
+            # In production, only return global datasets or datasets owned by this user
+            if not is_global and owner_id and str(owner_id) != user_id:
+                continue
+
         sources_summary.append({
             "source_id": s_id,
-            "name": s["name"],
+            "name": GLOBAL_DATASET_NAME if is_global else s["name"],
             "type": s["type"],
             "tables": s["tables"],
+            "is_global": is_global,
         })
+
     default_db = data_source_manager.get_default_db()
     if default_db:
         sources_summary.insert(0, {
@@ -334,12 +372,18 @@ async def get_active_data_sources():
             "name": "Default Database",
             "type": "database",
             "tables": default_db.get_usable_table_names(),
+            "is_global": True,
         })
     return {"status": "ok", "data_sources": sources_summary}
 
 
 @app.get("/data-sources/{source_id}/schema")
-async def get_data_source_schema(source_id: str, limit: int = 15):
+async def get_data_source_schema(source_id: str, raw_req: Request, limit: int = 15):
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    user_id = str(auth_user.customer_id) if auth_user else None
+    if is_production() and user_id and not data_source_manager.can_user_access_source(source_id, user_id):
+        return JSONResponse(status_code=403, content={"status": "error", "error": "Access denied to this data source"})
+
     schema_info = data_source_manager.get_schema(source_id, limit=limit)
     if schema_info.get("error"):
         return JSONResponse(
@@ -350,7 +394,12 @@ async def get_data_source_schema(source_id: str, limit: int = 15):
 
 
 @app.get("/data-sources/{source_id}/tables/{table_name}")
-async def get_table_records(source_id: str, table_name: str, limit: int = 25):
+async def get_table_records(source_id: str, table_name: str, raw_req: Request, limit: int = 25):
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    user_id = str(auth_user.customer_id) if auth_user else None
+    if is_production() and user_id and not data_source_manager.can_user_access_source(source_id, user_id):
+        return JSONResponse(status_code=403, content={"status": "error", "error": "Access denied to this data source"})
+
     records = data_source_manager.get_table_data(source_id, table_name, limit=limit)
     if records.get("error"):
         return JSONResponse(
@@ -360,8 +409,66 @@ async def get_table_records(source_id: str, table_name: str, limit: int = 25):
     return {"status": "ok", "table": table_name, "data": records}
 
 
-def _resolve_query_source(source_id: Optional[str]):
-    active_source, fell_back, requested = data_source_manager.resolve_source(source_id)
+# User-tied chat history sync endpoints (production persistence)
+@app.get("/chats/recent")
+async def get_user_recent_chats(raw_req: Request):
+    """Fetch recent chats for the authenticated user in production."""
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    user_id = str(auth_user.customer_id)
+
+    if is_production() and supabase_storage.is_configured():
+        try:
+            data = supabase_storage.download(f"chats/{user_id}.json")
+            if data:
+                chats = json.loads(data.decode("utf-8"))
+                return {"status": "ok", "chats": chats}
+        except Exception as e:
+            print(f"[ChatSync] Remote fetch failed for user {user_id}: {e}")
+
+    local_path = os.path.join(data_source_manager.storage_dir, f"chats_{user_id}.json")
+    if os.path.isfile(local_path):
+        try:
+            with open(local_path, "r", encoding="utf-8") as f:
+                return {"status": "ok", "chats": json.load(f)}
+        except Exception:
+            pass
+
+    return {"status": "ok", "chats": []}
+
+
+@app.post("/chats/recent")
+async def save_user_recent_chats(body: ChatSyncRequest, raw_req: Request):
+    """Save/sync recent chats for the authenticated user in production."""
+    auth_user = getattr(raw_req.state, "auth_user", None)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    user_id = str(auth_user.customer_id)
+    chats = body.chats[:10]
+
+    try:
+        local_path = os.path.join(data_source_manager.storage_dir, f"chats_{user_id}.json")
+        with open(local_path, "w", encoding="utf-8") as f:
+            json.dump(chats, f, indent=2)
+    except Exception as e:
+        print(f"[ChatSync] Local write failed for user {user_id}: {e}")
+
+    if is_production() and supabase_storage.is_configured():
+        try:
+            supabase_storage.upload(
+                f"chats/{user_id}.json",
+                json.dumps(chats, indent=2).encode("utf-8"),
+                "application/json",
+            )
+        except Exception as e:
+            print(f"[ChatSync] Remote write failed for user {user_id}: {e}")
+
+    return {"status": "ok"}
+
+
+def _resolve_query_source(source_id: Optional[str], user_id: Optional[str] = None):
+    active_source, fell_back, requested = data_source_manager.resolve_source(source_id, user_id=user_id)
     active_db = active_source["db"] if active_source else None
     return active_source, active_db, fell_back, requested
 
@@ -397,8 +504,9 @@ async def query_travel_agent(query: QueryRequest, request: Request):
     try:
         auth = auth_from_request(request)
         bearer = bearer_from_request(request)
+        user_id = str(auth.customer_id) if auth else None
         active_source, active_db, fell_back, requested = _resolve_query_source(
-            query.source_id
+            query.source_id, user_id=user_id
         )
         print(
             f"Query: {query.question} | Source: {active_source.get('name') if active_source else 'default'} | Model: {query.model_id or 'default'}"
@@ -427,8 +535,9 @@ async def options_query_stream():
 async def query_travel_agent_stream(query: QueryRequest, request: Request):
     auth = auth_from_request(request)
     bearer = bearer_from_request(request)
+    user_id = str(auth.customer_id) if auth else None
     active_source, active_db, fell_back, requested = _resolve_query_source(
-        query.source_id
+        query.source_id, user_id=user_id
     )
 
     async def event_generator():

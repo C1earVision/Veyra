@@ -19,6 +19,16 @@ from DB.connection_errors import _resolve_host, format_db_connection_error
 from DB import supabase_storage
 
 
+def is_production() -> bool:
+    env = os.environ.get("ENVIRONMENT", "").strip().lower()
+    node_env = os.environ.get("NODE_ENV", "").strip().lower()
+    return bool(os.environ.get("VERCEL") or env == "production" or node_env == "production")
+
+
+GLOBAL_DATASET_NAME = "E commerce dataset"
+GLOBAL_DATASET_SOURCE_ID = "file_f678cde1"
+
+
 class DataSourceManager:
     """Manages active relational and file-backed SQL data sources for the analytics agents."""
 
@@ -136,7 +146,12 @@ class DataSourceManager:
         ))
         return rebuilt, engine_args, is_ipv6_host
 
-    def register_database_connection(self, connection_url: str, custom_name: Optional[str] = None) -> Dict[str, Any]:
+    def register_database_connection(
+        self,
+        connection_url: str,
+        custom_name: Optional[str] = None,
+        owner_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         raw_url = connection_url.strip()
 
         # Extract basic connection context for detailed error diagnostic reporting
@@ -175,6 +190,8 @@ class DataSourceManager:
             "db": db,
             "tables": table_names,
             "schema": schema_meta,
+            "owner_id": owner_id,
+            "is_global": False,
         }
         self.sources[source_id] = source_record
         return {
@@ -183,9 +200,17 @@ class DataSourceManager:
             "type": "database",
             "tables": table_names,
             "schema": schema_meta,
+            "owner_id": owner_id,
+            "is_global": False,
         }
 
-    def register_uploaded_files(self, files: List[Dict[str, Any]], custom_name: Optional[str] = None) -> Dict[str, Any]:
+    def register_uploaded_files(
+        self,
+        files: List[Dict[str, Any]],
+        custom_name: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        is_global: bool = False,
+    ) -> Dict[str, Any]:
         source_id = f"file_{uuid.uuid4().hex[:8]}"
         db_path = os.path.join(self.storage_dir, f"{source_id}.duckdb")
         con = duckdb.connect(db_path)
@@ -237,6 +262,10 @@ class DataSourceManager:
         # Connect through LangChain SQLDatabase
         db = SQLDatabase.from_uri(f"duckdb:///{db_path.replace(chr(92), '/')}")
         display_name = (custom_name.strip() if custom_name and custom_name.strip() else None) or (files[0]["filename"] if files else "Uploaded Dataset")
+        if is_global or source_id == GLOBAL_DATASET_SOURCE_ID or display_name == GLOBAL_DATASET_NAME:
+            display_name = GLOBAL_DATASET_NAME
+            is_global = True
+
         schema_meta = self._inspect_database_schema(db, table_names)
 
         source_record = {
@@ -246,32 +275,56 @@ class DataSourceManager:
             "db": db,
             "tables": table_names,
             "schema": schema_meta,
+            "owner_id": owner_id,
+            "is_global": is_global,
         }
         self.sources[source_id] = source_record
-        self._persist_source_meta(source_id, display_name, "file", table_names)
+        self._persist_source_meta(
+            source_id,
+            display_name,
+            "file",
+            table_names,
+            owner_id=owner_id,
+            is_global=is_global,
+        )
         return {
             "source_id": source_id,
             "name": display_name,
             "type": "file",
             "tables": table_names,
             "schema": schema_meta,
+            "owner_id": owner_id,
+            "is_global": is_global,
         }
 
-    def rename_source(self, source_id: str, new_name: str) -> Dict[str, Any]:
+    def rename_source(self, source_id: str, new_name: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         if source_id == "default":
             raise ValueError("The default database cannot be renamed.")
         if source_id not in self.sources:
             self._restore_file_source(source_id)
         if source_id not in self.sources:
             raise ValueError(f"Data source '{source_id}' not found.")
+
+        rec = self.sources[source_id]
+        if rec.get("is_global") or rec.get("name") == GLOBAL_DATASET_NAME or source_id == GLOBAL_DATASET_SOURCE_ID:
+            raise ValueError("The global E commerce dataset cannot be renamed.")
+
+        if is_production() and user_id and rec.get("owner_id"):
+            if str(rec["owner_id"]) != str(user_id):
+                raise ValueError("You do not have permission to rename this data source.")
+
         clean_name = new_name.strip()
         if not clean_name:
             raise ValueError("Dataset name cannot be empty.")
         self.sources[source_id]["name"] = clean_name
-        rec = self.sources[source_id]
         if rec.get("type") == "file":
             self._persist_source_meta(
-                source_id, clean_name, "file", rec.get("tables") or []
+                source_id,
+                clean_name,
+                "file",
+                rec.get("tables") or [],
+                owner_id=rec.get("owner_id"),
+                is_global=rec.get("is_global", False),
             )
         return {
             "source_id": source_id,
@@ -279,6 +332,8 @@ class DataSourceManager:
             "type": self.sources[source_id]["type"],
             "tables": self.sources[source_id]["tables"],
             "schema": self.sources[source_id].get("schema", {}),
+            "owner_id": self.sources[source_id].get("owner_id"),
+            "is_global": self.sources[source_id].get("is_global", False),
         }
 
     def _delete_file_artifacts(self, source_id: str) -> None:
@@ -305,7 +360,7 @@ class DataSourceManager:
         if supabase_storage.is_configured():
             supabase_storage.delete([f"{source_id}.duckdb", f"{source_id}.meta.json"])
 
-    def delete_source(self, source_id: str) -> Dict[str, Any]:
+    def delete_source(self, source_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         if source_id == "default":
             raise ValueError("The default database cannot be deleted.")
 
@@ -317,12 +372,40 @@ class DataSourceManager:
                 os.path.isfile(self._duckdb_path(source_id))
                 or os.path.isfile(self._meta_path(source_id))
             ):
+                meta_path = self._meta_path(source_id)
+                if os.path.isfile(meta_path):
+                    try:
+                        with open(meta_path, encoding="utf-8") as f:
+                            meta = json.load(f)
+                        if meta.get("is_global") or meta.get("name") == GLOBAL_DATASET_NAME or source_id == GLOBAL_DATASET_SOURCE_ID:
+                            raise ValueError("The global E commerce dataset cannot be deleted.")
+                        if is_production() and user_id and meta.get("owner_id"):
+                            if str(meta["owner_id"]) != str(user_id):
+                                raise ValueError("You do not have permission to delete this data source.")
+                    except ValueError:
+                        raise
+                    except Exception:
+                        pass
                 self._delete_file_artifacts(source_id)
                 return {"source_id": source_id, "deleted": True}
             raise ValueError(f"Data source '{source_id}' not found.")
 
-        record = self.sources.pop(source_id)
+        record = self.sources.get(source_id, {})
+        if record.get("is_global") or record.get("name") == GLOBAL_DATASET_NAME or source_id == GLOBAL_DATASET_SOURCE_ID:
+            raise ValueError("The global E commerce dataset cannot be deleted.")
+
+        if is_production() and user_id and record.get("owner_id"):
+            if str(record["owner_id"]) != str(user_id):
+                raise ValueError("You do not have permission to delete this data source.")
+
+        self.sources.pop(source_id)
         if record.get("type") == "file":
+            db = record.get("db")
+            if db and hasattr(db, "_engine"):
+                try:
+                    db._engine.dispose()
+                except Exception:
+                    pass
             self._delete_file_artifacts(source_id)
 
         print(f"[DataSourceManager] Deleted source {source_id}")
@@ -340,19 +423,20 @@ class DataSourceManager:
         name: str,
         source_type: str,
         tables: List[str],
+        owner_id: Optional[str] = None,
+        is_global: bool = False,
     ) -> None:
+        payload = {
+            "source_id": source_id,
+            "name": name,
+            "type": source_type,
+            "tables": tables,
+            "owner_id": owner_id,
+            "is_global": is_global,
+        }
         try:
             with open(self._meta_path(source_id), "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "source_id": source_id,
-                        "name": name,
-                        "type": source_type,
-                        "tables": tables,
-                    },
-                    f,
-                    indent=2,
-                )
+                json.dump(payload, f, indent=2)
         except Exception as e:
             print(f"[DataSourceManager] Failed to persist meta for {source_id}: {e}")
         # Also persist to Supabase Storage for production resilience
@@ -360,10 +444,7 @@ class DataSourceManager:
             try:
                 supabase_storage.upload(
                     f"{source_id}.meta.json",
-                    json.dumps(
-                        {"source_id": source_id, "name": name, "type": source_type, "tables": tables},
-                        indent=2,
-                    ).encode("utf-8"),
+                    json.dumps(payload, indent=2).encode("utf-8"),
                     "application/json",
                 )
             except Exception as e_sb:
@@ -375,11 +456,18 @@ class DataSourceManager:
         db_path: str,
         display_name: str,
         table_names: Optional[List[str]] = None,
+        owner_id: Optional[str] = None,
+        is_global: bool = False,
     ) -> Dict[str, Any]:
         uri_path = db_path.replace("\\", "/")
         db = SQLDatabase.from_uri(f"duckdb:///{uri_path}")
         tables = table_names or list(db.get_usable_table_names())
         schema_meta = self._inspect_database_schema(db, tables)
+
+        if is_global or source_id == GLOBAL_DATASET_SOURCE_ID or display_name == GLOBAL_DATASET_NAME:
+            display_name = GLOBAL_DATASET_NAME
+            is_global = True
+
         source_record = {
             "source_id": source_id,
             "name": display_name,
@@ -387,6 +475,8 @@ class DataSourceManager:
             "db": db,
             "tables": tables,
             "schema": schema_meta,
+            "owner_id": owner_id,
+            "is_global": is_global,
         }
         self.sources[source_id] = source_record
         return source_record
@@ -416,6 +506,8 @@ class DataSourceManager:
 
         name = "Uploaded Dataset"
         tables: Optional[List[str]] = None
+        owner_id: Optional[str] = None
+        is_global: bool = False
         meta_path = self._meta_path(source_id)
 
         # Try loading metadata from local file first, then Supabase Storage
@@ -425,6 +517,8 @@ class DataSourceManager:
                     meta = json.load(f)
                 name = meta.get("name") or name
                 tables = meta.get("tables") or None
+                owner_id = meta.get("owner_id")
+                is_global = bool(meta.get("is_global", False))
             except Exception as e:
                 print(f"[DataSourceManager] Bad meta for {source_id}: {e}")
         elif supabase_storage.is_configured():
@@ -434,14 +528,29 @@ class DataSourceManager:
                     meta = json.loads(meta_data.decode("utf-8"))
                     name = meta.get("name") or name
                     tables = meta.get("tables") or None
+                    owner_id = meta.get("owner_id")
+                    is_global = bool(meta.get("is_global", False))
                     with open(meta_path, "wb") as f:
                         f.write(meta_data)
                 except Exception as e:
                     print(f"[DataSourceManager] Bad remote meta for {source_id}: {e}")
 
+        if source_id == GLOBAL_DATASET_SOURCE_ID or name.lower() in ("e commerce dataset", "e-commerce dataset", "data"):
+            ecom_tables = {"customers_dataset_cleaned", "orders_dataset_cleaned"}
+            if tables and ecom_tables.intersection(set(tables)):
+                name = GLOBAL_DATASET_NAME
+                is_global = True
+
         try:
-            print(f"[DataSourceManager] Restored file source {source_id}")
-            return self._attach_file_source(source_id, db_path, name, tables)
+            print(f"[DataSourceManager] Restored file source {source_id} (global={is_global}, owner={owner_id})")
+            return self._attach_file_source(
+                source_id,
+                db_path,
+                name,
+                tables,
+                owner_id=owner_id,
+                is_global=is_global,
+            )
         except Exception as e:
             print(f"[DataSourceManager] Failed to restore {source_id}: {e}")
             return None
@@ -487,7 +596,23 @@ class DataSourceManager:
             "db": default_db,
             "tables": tables,
             "schema": {},
+            "is_global": True,
         }
+
+    def can_user_access_source(self, source_id: Optional[str], user_id: Optional[str] = None) -> bool:
+        if not is_production():
+            return True
+        if not source_id or source_id == "default" or source_id == GLOBAL_DATASET_SOURCE_ID:
+            return True
+        source = self.get_source_strict(source_id)
+        if not source:
+            return False
+        if source.get("is_global") or source.get("name") == GLOBAL_DATASET_NAME:
+            return True
+        owner_id = source.get("owner_id")
+        if owner_id is None:
+            return True
+        return str(owner_id) == str(user_id) if user_id else False
 
     def source_exists(self, source_id: Optional[str]) -> bool:
         if not source_id or source_id == "default":
@@ -513,12 +638,18 @@ class DataSourceManager:
         return None
 
     def resolve_source(
-        self, source_id: Optional[str]
+        self, source_id: Optional[str], user_id: Optional[str] = None
     ) -> tuple[Optional[Dict[str, Any]], bool, Optional[str]]:
         """Return (active_source, fell_back_to_default, requested_source_id)."""
         requested = (source_id or "default").strip() or "default"
         if requested == "default":
             return self._default_source_record(), False, requested
+
+        if is_production() and user_id and not self.can_user_access_source(requested, user_id):
+            print(
+                f"[DataSourceManager] Access denied for source '{requested}' by user {user_id} — falling back to default database"
+            )
+            return self._default_source_record(), True, requested
 
         strict = self.get_source_strict(requested)
         if strict:
