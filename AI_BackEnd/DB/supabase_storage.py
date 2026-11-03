@@ -14,6 +14,10 @@ import json
 from typing import Optional, List
 from dotenv import load_dotenv
 
+# Load .env from backend directory or fallback to cwd
+_env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+if os.path.isfile(_env_path):
+    load_dotenv(_env_path)
 load_dotenv()
 
 import httpx

@@ -277,7 +277,7 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
 
   const handleDeleteSource = async (e, source) => {
     e.stopPropagation();
-    if (source.source_id === "default" || source.is_global || source.name === "E commerce dataset") return;
+    if (source.source_id === "default" || (source.is_global && source.source_id === "file_f678cde1")) return;
     const label = source.name || source.source_id;
     if (
       !window.confirm(
@@ -301,8 +301,9 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
         onSelectSource(DEFAULT_SOURCE);
       }
       setSuccessMsg(`Removed "${label}".`);
+      fetchActiveSources();
     } catch (err) {
-      setError(err.response?.data?.error || "Failed to remove data source.");
+      setError(err.response?.data?.error || err.response?.data?.detail || "Failed to remove data source.");
     } finally {
       setDeleteLoadingId(null);
     }
@@ -315,6 +316,7 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
       return;
     }
     setRenameLoading(true);
+    setError(null);
     try {
       const res = await axios.patch(
         `${AI_API_URL}/data-sources/${sourceId}/rename`,
@@ -331,9 +333,10 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
         }
         setEditingSourceId(null);
         setEditingName("");
+        fetchActiveSources();
       }
     } catch (err) {
-      setError(err.response?.data?.error || "Failed to rename dataset.");
+      setError(err.response?.data?.error || err.response?.data?.detail || "Failed to rename dataset.");
     } finally {
       setRenameLoading(false);
     }
@@ -608,7 +611,7 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
                 activeSources.map((source) => {
                   const isSelected = (activeSource?.source_id || "default") === source.source_id;
                   const isEditing = editingSourceId === source.source_id;
-                  const isGlobal = Boolean(source.is_global || source.source_id === "default");
+                  const isGlobal = Boolean(source.source_id === "default" || (source.is_global && source.source_id === "file_f678cde1"));
                   const canRename = !isGlobal;
                   const canDelete = !isGlobal;
                   const isDeleting = deleteLoadingId === source.source_id;

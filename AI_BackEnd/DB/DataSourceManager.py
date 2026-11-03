@@ -265,7 +265,7 @@ class DataSourceManager:
             engine_args={"connect_args": {"read_only": True}},
         )
         display_name = (custom_name.strip() if custom_name and custom_name.strip() else None) or (files[0]["filename"] if files else "Uploaded Dataset")
-        if is_global or source_id == GLOBAL_DATASET_SOURCE_ID:
+        if source_id == GLOBAL_DATASET_SOURCE_ID:
             display_name = GLOBAL_DATASET_NAME
             is_global = True
         else:
@@ -311,12 +311,15 @@ class DataSourceManager:
             raise ValueError(f"Data source '{source_id}' not found.")
 
         rec = self.sources[source_id]
-        if rec.get("is_global") or rec.get("name") == GLOBAL_DATASET_NAME or source_id == GLOBAL_DATASET_SOURCE_ID:
+        if source_id == GLOBAL_DATASET_SOURCE_ID or (rec.get("is_global") and source_id == GLOBAL_DATASET_SOURCE_ID):
             raise ValueError("The global E commerce dataset cannot be renamed.")
 
-        if is_production() and user_id and rec.get("owner_id"):
+        if user_id and rec.get("owner_id"):
             if str(rec["owner_id"]) != str(user_id):
                 raise ValueError("You do not have permission to rename this data source.")
+        elif user_id and rec.get("owner_id") is None:
+            # Claim unowned legacy datasource for this user
+            rec["owner_id"] = str(user_id)
 
         clean_name = new_name.strip()
         if not clean_name:
@@ -343,15 +346,27 @@ class DataSourceManager:
 
     def _delete_file_artifacts(self, source_id: str) -> None:
         """Remove DuckDB file, metadata, and temp upload files for a file-backed source."""
+        import gc
+        import time
+
+        gc.collect()
+
         for path in (
             self._duckdb_path(source_id),
             self._meta_path(source_id),
         ):
-            try:
-                if os.path.isfile(path):
+            if not os.path.isfile(path):
+                continue
+            for attempt in range(3):
+                try:
                     os.remove(path)
-            except Exception as e:
-                print(f"[DataSourceManager] Failed to remove {path}: {e}")
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        time.sleep(0.1)
+                        gc.collect()
+                    else:
+                        print(f"[DataSourceManager] Failed to remove {path}: {e}")
 
         pattern = os.path.join(self.storage_dir, f"{source_id}_*")
         for path in glob.glob(pattern):
@@ -363,11 +378,17 @@ class DataSourceManager:
 
         # Also delete from Supabase Storage
         if supabase_storage.is_configured():
-            supabase_storage.delete([f"{source_id}.duckdb", f"{source_id}.meta.json"])
+            try:
+                supabase_storage.delete([f"{source_id}.duckdb", f"{source_id}.meta.json"])
+            except Exception as e:
+                print(f"[DataSourceManager] Failed to delete remote artifacts for {source_id}: {e}")
 
     def delete_source(self, source_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         if source_id == "default":
             raise ValueError("The default database cannot be deleted.")
+
+        if source_id == GLOBAL_DATASET_SOURCE_ID:
+            raise ValueError("The global E commerce dataset cannot be deleted.")
 
         if source_id not in self.sources:
             self._restore_file_source(source_id)
@@ -382,9 +403,7 @@ class DataSourceManager:
                     try:
                         with open(meta_path, encoding="utf-8") as f:
                             meta = json.load(f)
-                        if meta.get("is_global") or meta.get("name") == GLOBAL_DATASET_NAME or source_id == GLOBAL_DATASET_SOURCE_ID:
-                            raise ValueError("The global E commerce dataset cannot be deleted.")
-                        if is_production() and user_id and meta.get("owner_id"):
+                        if user_id and meta.get("owner_id"):
                             if str(meta["owner_id"]) != str(user_id):
                                 raise ValueError("You do not have permission to delete this data source.")
                     except ValueError:
@@ -396,21 +415,23 @@ class DataSourceManager:
             raise ValueError(f"Data source '{source_id}' not found.")
 
         record = self.sources.get(source_id, {})
-        if record.get("is_global") or record.get("name") == GLOBAL_DATASET_NAME or source_id == GLOBAL_DATASET_SOURCE_ID:
-            raise ValueError("The global E commerce dataset cannot be deleted.")
-
-        if is_production() and user_id and record.get("owner_id"):
+        if user_id and record.get("owner_id"):
             if str(record["owner_id"]) != str(user_id):
                 raise ValueError("You do not have permission to delete this data source.")
 
-        self.sources.pop(source_id)
+        self.sources.pop(source_id, None)
         if record.get("type") == "file":
             db = record.get("db")
-            if db and hasattr(db, "_engine"):
-                try:
-                    db._engine.dispose()
-                except Exception:
-                    pass
+            if db:
+                if hasattr(db, "_engine") and db._engine:
+                    try:
+                        db._engine.dispose()
+                    except Exception:
+                        pass
+                record["db"] = None
+                del db
+                import gc
+                gc.collect()
             self._delete_file_artifacts(source_id)
 
         print(f"[DataSourceManager] Deleted source {source_id}")
@@ -472,9 +493,11 @@ class DataSourceManager:
         tables = table_names or list(db.get_usable_table_names())
         schema_meta = self._inspect_database_schema(db, tables)
 
-        if is_global or source_id == GLOBAL_DATASET_SOURCE_ID:
+        if source_id == GLOBAL_DATASET_SOURCE_ID:
             display_name = GLOBAL_DATASET_NAME
             is_global = True
+        else:
+            is_global = False
 
         source_record = {
             "source_id": source_id,
@@ -600,8 +623,8 @@ class DataSourceManager:
                 try:
                     with open(meta_file, encoding="utf-8") as f:
                         meta = json.load(f)
-                    is_global = bool(meta.get("is_global", False) or sid == GLOBAL_DATASET_SOURCE_ID)
-                    name = GLOBAL_DATASET_NAME if (sid == GLOBAL_DATASET_SOURCE_ID) else (meta.get("name") or "Uploaded Dataset")
+                    is_global = (sid == GLOBAL_DATASET_SOURCE_ID)
+                    name = GLOBAL_DATASET_NAME if is_global else (meta.get("name") or "Uploaded Dataset")
                     self.sources[sid] = {
                         "source_id": sid,
                         "name": name,
@@ -621,11 +644,10 @@ class DataSourceManager:
             if sid not in self.sources:
                 self._restore_file_source(sid)
 
-        # 3. Supabase Storage files
+        # 3. Supabase Storage files (fast pass: metadata files only)
         if supabase_storage.is_configured():
             try:
                 remote_files = supabase_storage.list_objects("")
-                # Fast pass: metadata files
                 for rname in remote_files:
                     if rname.startswith("file_") and rname.endswith(".meta.json"):
                         sid = rname.replace(".meta.json", "")
@@ -641,8 +663,8 @@ class DataSourceManager:
                                         f.write(meta_data)
                                 except Exception:
                                     pass
-                                is_global = bool(meta.get("is_global", False) or sid == GLOBAL_DATASET_SOURCE_ID)
-                                name = GLOBAL_DATASET_NAME if (sid == GLOBAL_DATASET_SOURCE_ID) else (meta.get("name") or "Uploaded Dataset")
+                                is_global = (sid == GLOBAL_DATASET_SOURCE_ID)
+                                name = GLOBAL_DATASET_NAME if is_global else (meta.get("name") or "Uploaded Dataset")
                                 self.sources[sid] = {
                                     "source_id": sid,
                                     "name": name,
@@ -655,13 +677,6 @@ class DataSourceManager:
                                 }
                             except Exception as e:
                                 print(f"[DataSourceManager] Error parsing remote meta {sid}: {e}")
-
-                # Secondary pass: any duckdb file not yet discovered
-                for rname in remote_files:
-                    if rname.startswith("file_") and rname.endswith(".duckdb"):
-                        sid = rname.replace(".duckdb", "")
-                        if sid not in self.sources:
-                            self._restore_file_source(sid)
             except Exception as e:
                 print(f"[DataSourceManager] Remote discovery failed: {e}")
 
@@ -697,7 +712,7 @@ class DataSourceManager:
         source = self.get_source_strict(source_id)
         if not source:
             return False
-        if source.get("is_global") or source.get("name") == GLOBAL_DATASET_NAME:
+        if source_id == GLOBAL_DATASET_SOURCE_ID or source.get("is_global"):
             return True
         owner_id = source.get("owner_id")
         if owner_id is None:

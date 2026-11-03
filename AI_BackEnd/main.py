@@ -365,25 +365,14 @@ async def get_active_data_sources(raw_req: Request):
             continue
 
         is_canonical_global = (s_id == GLOBAL_DATASET_SOURCE_ID)
-        is_global = bool(s.get("is_global") or is_canonical_global)
+        is_global = is_canonical_global
         owner_id = s.get("owner_id")
-
-        if is_global or s.get("name") == GLOBAL_DATASET_NAME:
-            if is_canonical_global:
-                is_global = True
-                global_dataset_added = True
-            elif not global_dataset_added:
-                is_global = True
-                global_dataset_added = True
-            else:
-                # Do not duplicate global dataset
-                is_global = False
 
         if user_id and not is_global:
             if owner_id and str(owner_id) != user_id:
                 continue
 
-        name = GLOBAL_DATASET_NAME if (is_global and is_canonical_global) else s["name"]
+        name = GLOBAL_DATASET_NAME if is_canonical_global else s["name"]
 
         sources_summary.append({
             "source_id": s_id,
