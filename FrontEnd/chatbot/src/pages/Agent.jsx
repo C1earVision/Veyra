@@ -773,6 +773,20 @@ export default function App() {
     fetchUserRecentChats().then((chats) => {
       if (Array.isArray(chats) && chats.length > 0) {
         setRecentChats(chats);
+        // If current device session is empty, restore the latest chat session from server
+        const activeState = getSavedActiveSession();
+        if ((!activeState.messages || activeState.messages.length === 0) && !currentChatIdRef.current) {
+          const latest = chats[0];
+          setCurrentChatId(latest.id);
+          currentChatIdRef.current = latest.id;
+          setMessages(latest.messages || []);
+          if (latest.contextMessages) {
+            localStorage.setItem("messages", JSON.stringify(latest.contextMessages));
+          }
+          if (latest.source) {
+            handleSelectSource(latest.source);
+          }
+        }
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1159,6 +1173,19 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Sync recent chats from server when tab/window is focused across devices
+  useEffect(() => {
+    const handleFocus = () => {
+      fetchUserRecentChats().then((chats) => {
+        if (Array.isArray(chats) && chats.length > 0) {
+          setRecentChats(chats);
+        }
+      });
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, []);
+
   const handleDeleteChat = (chatId) => {
     if (activeStreams.has(chatId)) {
       const stream = activeStreams.get(chatId);
@@ -1287,7 +1314,7 @@ export default function App() {
     activeStreams.clear();
     setActiveStreamIds(new Set());
 
-    // Preserve current active session and source before logging out
+    // Preserve current active session and source for current user before logging out
     if (messages.length > 0) {
       let ctx = ["Context: "];
       try {
@@ -1298,9 +1325,14 @@ export default function App() {
     if (activeSource) {
       saveActiveSource(activeSource);
     }
-    // Remove authentication session ONLY
+    // Remove authentication session and reset active in-memory state to avoid cross-user bleed
     localStorage.removeItem("user");
     localStorage.removeItem("admin");
+    localStorage.removeItem("activeSource");
+    localStorage.removeItem("messages");
+    setMessages([]);
+    setCurrentChatId(null);
+    setActiveSource(DEFAULT_SOURCE);
     navigate("/");
   };
 

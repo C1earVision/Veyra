@@ -215,7 +215,7 @@ async def get_visualization_image(visualization_id: str):
 @app.post("/data-sources/connect")
 async def connect_database(request: ConnectDbRequest, raw_req: Request):
     auth_user = getattr(raw_req.state, "auth_user", None)
-    owner_id = str(auth_user.customer_id) if (is_production() and auth_user) else None
+    owner_id = str(auth_user.customer_id) if auth_user else None
     try:
         result = data_source_manager.register_database_connection(
             request.connection_string, request.custom_name, owner_id=owner_id
@@ -266,7 +266,7 @@ async def complete_upload(request: CompleteUploadRequest, raw_req: Request):
     persists it in Supabase, and removes the temp raw files.
     """
     auth_user = getattr(raw_req.state, "auth_user", None)
-    owner_id = str(auth_user.customer_id) if (is_production() and auth_user) else None
+    owner_id = str(auth_user.customer_id) if auth_user else None
     try:
         files_data = []
         for file_item in request.files:
@@ -300,7 +300,7 @@ async def upload_data_files(
     custom_name: Optional[str] = Form(None),
 ):
     auth_user = getattr(raw_req.state, "auth_user", None)
-    owner_id = str(auth_user.customer_id) if (is_production() and auth_user) else None
+    owner_id = str(auth_user.customer_id) if auth_user else None
     try:
         files_data = []
         for file in files:
@@ -341,39 +341,59 @@ async def delete_data_source(source_id: str, raw_req: Request):
 async def get_active_data_sources(raw_req: Request):
     auth_user = getattr(raw_req.state, "auth_user", None)
     user_id = str(auth_user.customer_id) if auth_user else None
-    prod = is_production()
+
+    # Dynamically discover newly persisted files locally and in Supabase
+    data_source_manager.discover_persisted_sources()
 
     sources_summary = []
-    for s_id, s in data_source_manager.sources.items():
-        is_global = bool(
-            s.get("is_global")
-            or s_id == GLOBAL_DATASET_SOURCE_ID
-            or s.get("name") == GLOBAL_DATASET_NAME
-        )
-        owner_id = s.get("owner_id")
-
-        if prod and user_id:
-            # In production, only return global datasets or datasets owned by this user
-            if not is_global and owner_id and str(owner_id) != user_id:
-                continue
-
-        sources_summary.append({
-            "source_id": s_id,
-            "name": GLOBAL_DATASET_NAME if is_global else s["name"],
-            "type": s["type"],
-            "tables": s["tables"],
-            "is_global": is_global,
-        })
+    seen_ids = set()
+    global_dataset_added = False
 
     default_db = data_source_manager.get_default_db()
     if default_db:
-        sources_summary.insert(0, {
+        sources_summary.append({
             "source_id": "default",
             "name": "Default Database",
             "type": "database",
             "tables": default_db.get_usable_table_names(),
             "is_global": True,
         })
+        seen_ids.add("default")
+
+    for s_id, s in list(data_source_manager.sources.items()):
+        if s_id in seen_ids or s_id == "default":
+            continue
+
+        is_canonical_global = (s_id == GLOBAL_DATASET_SOURCE_ID)
+        is_global = bool(s.get("is_global") or is_canonical_global)
+        owner_id = s.get("owner_id")
+
+        if is_global or s.get("name") == GLOBAL_DATASET_NAME:
+            if is_canonical_global:
+                is_global = True
+                global_dataset_added = True
+            elif not global_dataset_added:
+                is_global = True
+                global_dataset_added = True
+            else:
+                # Do not duplicate global dataset
+                is_global = False
+
+        if user_id and not is_global:
+            if owner_id and str(owner_id) != user_id:
+                continue
+
+        name = GLOBAL_DATASET_NAME if (is_global and is_canonical_global) else s["name"]
+
+        sources_summary.append({
+            "source_id": s_id,
+            "name": name,
+            "type": s["type"],
+            "tables": s.get("tables") or [],
+            "is_global": is_global,
+        })
+        seen_ids.add(s_id)
+
     return {"status": "ok", "data_sources": sources_summary}
 
 
@@ -409,20 +429,26 @@ async def get_table_records(source_id: str, table_name: str, raw_req: Request, l
     return {"status": "ok", "table": table_name, "data": records}
 
 
-# User-tied chat history sync endpoints (production persistence)
+# User-tied chat history sync endpoints (cross-device persistence)
 @app.get("/chats/recent")
 async def get_user_recent_chats(raw_req: Request):
-    """Fetch recent chats for the authenticated user in production."""
+    """Fetch recent chats for the authenticated user across devices."""
     auth_user = getattr(raw_req.state, "auth_user", None)
     if not auth_user:
         raise HTTPException(status_code=401, detail="Unauthorized")
     user_id = str(auth_user.customer_id)
 
-    if is_production() and supabase_storage.is_configured():
+    if supabase_storage.is_configured():
         try:
             data = supabase_storage.download(f"chats/{user_id}.json")
             if data:
                 chats = json.loads(data.decode("utf-8"))
+                local_path = os.path.join(data_source_manager.storage_dir, f"chats_{user_id}.json")
+                try:
+                    with open(local_path, "w", encoding="utf-8") as f:
+                        json.dump(chats, f, indent=2)
+                except Exception:
+                    pass
                 return {"status": "ok", "chats": chats}
         except Exception as e:
             print(f"[ChatSync] Remote fetch failed for user {user_id}: {e}")
@@ -440,7 +466,7 @@ async def get_user_recent_chats(raw_req: Request):
 
 @app.post("/chats/recent")
 async def save_user_recent_chats(body: ChatSyncRequest, raw_req: Request):
-    """Save/sync recent chats for the authenticated user in production."""
+    """Save/sync recent chats for the authenticated user across devices."""
     auth_user = getattr(raw_req.state, "auth_user", None)
     if not auth_user:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -454,7 +480,7 @@ async def save_user_recent_chats(body: ChatSyncRequest, raw_req: Request):
     except Exception as e:
         print(f"[ChatSync] Local write failed for user {user_id}: {e}")
 
-    if is_production() and supabase_storage.is_configured():
+    if supabase_storage.is_configured():
         try:
             supabase_storage.upload(
                 f"chats/{user_id}.json",

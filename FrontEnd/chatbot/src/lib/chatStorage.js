@@ -30,15 +30,12 @@ export function getCurrentUserId() {
 }
 
 /**
- * In production, scope the storage key by the authenticated user's ID.
- * In local deployment, keep the simple global key.
+ * Scope the storage key by the authenticated user's ID across all devices/environments.
  */
 export function getStorageKey() {
-  if (isProduction()) {
-    const userId = getCurrentUserId();
-    if (userId) {
-      return `${BASE_STORAGE_KEY}_${userId}`;
-    }
+  const userId = getCurrentUserId();
+  if (userId) {
+    return `${BASE_STORAGE_KEY}_${userId}`;
   }
   return BASE_STORAGE_KEY;
 }
@@ -47,12 +44,10 @@ export function getStorageKey() {
  * Retrieve saved active data source for current user across logouts.
  */
 export function getSavedActiveSource() {
-  const userId = isProduction() ? getCurrentUserId() : null;
+  const userId = getCurrentUserId();
   const key = userId ? `Veyra_active_source_${userId}` : "activeSource";
   try {
-    const raw =
-      localStorage.getItem(key) ||
-      (userId ? localStorage.getItem("activeSource") : null);
+    const raw = localStorage.getItem(key);
     if (raw) return JSON.parse(raw);
   } catch (e) {
     console.error("Failed to load activeSource:", e);
@@ -69,11 +64,13 @@ export function getSavedActiveSource() {
  */
 export function saveActiveSource(source) {
   if (!source) return;
-  const userId = isProduction() ? getCurrentUserId() : null;
+  const userId = getCurrentUserId();
   const key = userId ? `Veyra_active_source_${userId}` : "activeSource";
   try {
     localStorage.setItem(key, JSON.stringify(source));
-    localStorage.setItem("activeSource", JSON.stringify(source));
+    if (!userId) {
+      localStorage.setItem("activeSource", JSON.stringify(source));
+    }
   } catch (e) {
     console.error("Failed to save activeSource:", e);
   }
@@ -83,7 +80,7 @@ export function saveActiveSource(source) {
  * Retrieve saved active chat session (messages, chatId, context) across logouts.
  */
 export function getSavedActiveSession() {
-  const userId = isProduction() ? getCurrentUserId() : null;
+  const userId = getCurrentUserId();
   const msgKey = userId ? `Veyra_active_messages_${userId}` : "Veyra_active_messages";
   const idKey = userId ? `Veyra_active_chat_id_${userId}` : "Veyra_active_chat_id";
   const ctxKey = userId ? `Veyra_context_${userId}` : "messages";
@@ -106,7 +103,7 @@ export function getSavedActiveSession() {
  * Persist active chat session (messages, chatId, context) across logouts.
  */
 export function saveActiveSession(messages, chatId, contextMessages) {
-  const userId = isProduction() ? getCurrentUserId() : null;
+  const userId = getCurrentUserId();
   const msgKey = userId ? `Veyra_active_messages_${userId}` : "Veyra_active_messages";
   const idKey = userId ? `Veyra_active_chat_id_${userId}` : "Veyra_active_chat_id";
   const ctxKey = userId ? `Veyra_context_${userId}` : "messages";
@@ -123,7 +120,9 @@ export function saveActiveSession(messages, chatId, contextMessages) {
     }
     if (contextMessages) {
       localStorage.setItem(ctxKey, JSON.stringify(contextMessages));
-      localStorage.setItem("messages", JSON.stringify(contextMessages));
+      if (!userId) {
+        localStorage.setItem("messages", JSON.stringify(contextMessages));
+      }
     }
   } catch (e) {
     console.error("Failed to save active session:", e);
@@ -162,10 +161,9 @@ export function getRecentChats() {
 }
 
 /**
- * Synchronize recent chats to backend server in production.
+ * Synchronize recent chats to backend server across devices.
  */
 export async function syncChatsToServer(chats) {
-  if (!isProduction()) return;
   try {
     const auth = getStoredAuth();
     if (!auth?.token) return;
@@ -180,12 +178,10 @@ export async function syncChatsToServer(chats) {
 }
 
 /**
- * Fetch remote recent chats for current user in production and sync to localStorage.
+ * Fetch remote recent chats for current user and sync to localStorage.
  */
 export async function fetchUserRecentChats() {
   const localChats = getRecentChats();
-  if (!isProduction()) return localChats;
-
   try {
     const auth = getStoredAuth();
     if (!auth?.token) return localChats;
@@ -197,7 +193,12 @@ export async function fetchUserRecentChats() {
       if (serverChats.length > 0) {
         localStorage.setItem(getStorageKey(), JSON.stringify(serverChats));
         return serverChats;
+      } else if (localChats.length > 0) {
+        // Sync local to remote if remote was empty
+        syncChatsToServer(localChats);
+        return localChats;
       }
+      return [];
     }
   } catch (err) {
     console.error("Failed to fetch remote chats:", err);

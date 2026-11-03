@@ -12,6 +12,9 @@ filesystem path work as before (good for local development).
 import os
 import json
 from typing import Optional, List
+from dotenv import load_dotenv
+
+load_dotenv()
 
 import httpx
 

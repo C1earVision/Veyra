@@ -53,11 +53,20 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
         headers: authHeaders(),
       });
       if (res.data?.data_sources) {
-        setActiveSources(res.data.data_sources);
+        // Deduplicate by source_id
+        const unique = [];
+        const seen = new Set();
+        for (const s of res.data.data_sources) {
+          if (!seen.has(s.source_id)) {
+            seen.add(s.source_id);
+            unique.push(s);
+          }
+        }
+        setActiveSources(unique);
         if (activeSource) {
           const reconciled = reconcileSourceWithServer(
             activeSource,
-            res.data.data_sources
+            unique
           );
           if (reconciled.source_id !== (activeSource.source_id || "default")) {
             onSelectSource(reconciled);
@@ -226,6 +235,10 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
       if (createdSource) {
         setSuccessMsg(`Dataset prepared! Discovered ${createdSource.tables.length} table(s).`);
         onSelectSource(createdSource);
+        setActiveSources((prev) => {
+          const filtered = prev.filter((s) => s.source_id !== createdSource.source_id);
+          return [createdSource, ...filtered];
+        });
         fetchActiveSources();
         setFiles([]);
         setDatasetName("");
@@ -595,7 +608,7 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
                 activeSources.map((source) => {
                   const isSelected = (activeSource?.source_id || "default") === source.source_id;
                   const isEditing = editingSourceId === source.source_id;
-                  const isGlobal = Boolean(source.is_global || source.source_id === "default" || source.name === "E commerce dataset");
+                  const isGlobal = Boolean(source.is_global || source.source_id === "default");
                   const canRename = !isGlobal;
                   const canDelete = !isGlobal;
                   const isDeleting = deleteLoadingId === source.source_id;

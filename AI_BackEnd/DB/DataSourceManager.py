@@ -259,12 +259,17 @@ class DataSourceManager:
             except Exception as e:
                 print(f"[DataSourceManager] Supabase upload failed for {source_id}: {e}")
 
-        # Connect through LangChain SQLDatabase
-        db = SQLDatabase.from_uri(f"duckdb:///{db_path.replace(chr(92), '/')}")
+        # Connect through LangChain SQLDatabase with read_only=True
+        db = SQLDatabase.from_uri(
+            f"duckdb:///{db_path.replace(chr(92), '/')}",
+            engine_args={"connect_args": {"read_only": True}},
+        )
         display_name = (custom_name.strip() if custom_name and custom_name.strip() else None) or (files[0]["filename"] if files else "Uploaded Dataset")
-        if is_global or source_id == GLOBAL_DATASET_SOURCE_ID or display_name == GLOBAL_DATASET_NAME:
+        if is_global or source_id == GLOBAL_DATASET_SOURCE_ID:
             display_name = GLOBAL_DATASET_NAME
             is_global = True
+        else:
+            is_global = False
 
         schema_meta = self._inspect_database_schema(db, table_names)
 
@@ -460,11 +465,14 @@ class DataSourceManager:
         is_global: bool = False,
     ) -> Dict[str, Any]:
         uri_path = db_path.replace("\\", "/")
-        db = SQLDatabase.from_uri(f"duckdb:///{uri_path}")
+        db = SQLDatabase.from_uri(
+            f"duckdb:///{uri_path}",
+            engine_args={"connect_args": {"read_only": True}},
+        )
         tables = table_names or list(db.get_usable_table_names())
         schema_meta = self._inspect_database_schema(db, tables)
 
-        if is_global or source_id == GLOBAL_DATASET_SOURCE_ID or display_name == GLOBAL_DATASET_NAME:
+        if is_global or source_id == GLOBAL_DATASET_SOURCE_ID:
             display_name = GLOBAL_DATASET_NAME
             is_global = True
 
@@ -484,7 +492,7 @@ class DataSourceManager:
     def _restore_file_source(self, source_id: str) -> Optional[Dict[str, Any]]:
         if not source_id.startswith("file_"):
             return None
-        if source_id in self.sources:
+        if source_id in self.sources and self.sources[source_id].get("db") is not None:
             return self.sources[source_id]
 
         db_path = self._duckdb_path(source_id)
@@ -500,9 +508,6 @@ class DataSourceManager:
                     print(f"[DataSourceManager] Downloaded {source_id}.duckdb from Supabase Storage")
                 except Exception as e:
                     print(f"[DataSourceManager] Failed to save downloaded DuckDB for {source_id}: {e}")
-
-        if not os.path.isfile(db_path):
-            return None
 
         name = "Uploaded Dataset"
         tables: Optional[List[str]] = None
@@ -535,11 +540,29 @@ class DataSourceManager:
                 except Exception as e:
                     print(f"[DataSourceManager] Bad remote meta for {source_id}: {e}")
 
-        if source_id == GLOBAL_DATASET_SOURCE_ID or name.lower() in ("e commerce dataset", "e-commerce dataset", "data"):
-            ecom_tables = {"customers_dataset_cleaned", "orders_dataset_cleaned"}
-            if tables and ecom_tables.intersection(set(tables)):
-                name = GLOBAL_DATASET_NAME
-                is_global = True
+        # Canonical global dataset
+        if source_id == GLOBAL_DATASET_SOURCE_ID:
+            name = GLOBAL_DATASET_NAME
+            is_global = True
+        elif is_global and name == GLOBAL_DATASET_NAME:
+            # Prevent duplicate shared sources
+            is_global = False
+
+        if not os.path.isfile(db_path):
+            if tables:
+                record = {
+                    "source_id": source_id,
+                    "name": name,
+                    "type": "file",
+                    "db": None,
+                    "tables": tables,
+                    "schema": {},
+                    "owner_id": owner_id,
+                    "is_global": is_global,
+                }
+                self.sources[source_id] = record
+                return record
+            return None
 
         try:
             print(f"[DataSourceManager] Restored file source {source_id} (global={is_global}, owner={owner_id})")
@@ -552,32 +575,99 @@ class DataSourceManager:
                 is_global=is_global,
             )
         except Exception as e:
-            print(f"[DataSourceManager] Failed to restore {source_id}: {e}")
+            print(f"[DataSourceManager] Failed to attach {source_id}: {e}")
+            if tables:
+                record = {
+                    "source_id": source_id,
+                    "name": name,
+                    "type": "file",
+                    "db": None,
+                    "tables": tables,
+                    "schema": {},
+                    "owner_id": owner_id,
+                    "is_global": is_global,
+                }
+                self.sources[source_id] = record
+                return record
             return None
 
-    def _load_persisted_file_sources(self) -> None:
-        """Re-register uploaded DuckDB datasets after server restart."""
-        # Discover from local filesystem
-        local_ids = set()
-        for db_path in glob.glob(os.path.join(self.storage_dir, "file_*.duckdb")):
-            source_id = os.path.splitext(os.path.basename(db_path))[0]
-            local_ids.add(source_id)
-            if source_id in self.sources:
-                continue
-            self._restore_file_source(source_id)
+    def discover_persisted_sources(self) -> None:
+        """Dynamically discover any persisted metadata/datasets locally or from Supabase."""
+        # 1. Local metadata files
+        for meta_file in glob.glob(os.path.join(self.storage_dir, "file_*.meta.json")):
+            sid = os.path.splitext(os.path.basename(meta_file))[0].replace(".meta", "")
+            if sid not in self.sources:
+                try:
+                    with open(meta_file, encoding="utf-8") as f:
+                        meta = json.load(f)
+                    is_global = bool(meta.get("is_global", False) or sid == GLOBAL_DATASET_SOURCE_ID)
+                    name = GLOBAL_DATASET_NAME if (sid == GLOBAL_DATASET_SOURCE_ID) else (meta.get("name") or "Uploaded Dataset")
+                    self.sources[sid] = {
+                        "source_id": sid,
+                        "name": name,
+                        "type": "file",
+                        "db": None,
+                        "tables": meta.get("tables") or [],
+                        "schema": {},
+                        "owner_id": meta.get("owner_id"),
+                        "is_global": is_global,
+                    }
+                except Exception as e:
+                    print(f"[DataSourceManager] Error reading local meta {meta_file}: {e}")
 
-        # Also discover from Supabase Storage (handles serverless cold starts)
+        # 2. Local duckdb files without meta
+        for db_path in glob.glob(os.path.join(self.storage_dir, "file_*.duckdb")):
+            sid = os.path.splitext(os.path.basename(db_path))[0]
+            if sid not in self.sources:
+                self._restore_file_source(sid)
+
+        # 3. Supabase Storage files
         if supabase_storage.is_configured():
             try:
                 remote_files = supabase_storage.list_objects("")
-                for name in remote_files:
-                    if name.startswith("file_") and name.endswith(".duckdb"):
-                        sid = name.replace(".duckdb", "")
-                        if sid in self.sources or sid in local_ids:
+                # Fast pass: metadata files
+                for rname in remote_files:
+                    if rname.startswith("file_") and rname.endswith(".meta.json"):
+                        sid = rname.replace(".meta.json", "")
+                        if sid in self.sources:
                             continue
-                        self._restore_file_source(sid)
+                        meta_data = supabase_storage.download(rname)
+                        if meta_data:
+                            try:
+                                meta = json.loads(meta_data.decode("utf-8"))
+                                local_meta_path = self._meta_path(sid)
+                                try:
+                                    with open(local_meta_path, "wb") as f:
+                                        f.write(meta_data)
+                                except Exception:
+                                    pass
+                                is_global = bool(meta.get("is_global", False) or sid == GLOBAL_DATASET_SOURCE_ID)
+                                name = GLOBAL_DATASET_NAME if (sid == GLOBAL_DATASET_SOURCE_ID) else (meta.get("name") or "Uploaded Dataset")
+                                self.sources[sid] = {
+                                    "source_id": sid,
+                                    "name": name,
+                                    "type": "file",
+                                    "db": None,
+                                    "tables": meta.get("tables") or [],
+                                    "schema": {},
+                                    "owner_id": meta.get("owner_id"),
+                                    "is_global": is_global,
+                                }
+                            except Exception as e:
+                                print(f"[DataSourceManager] Error parsing remote meta {sid}: {e}")
+
+                # Secondary pass: any duckdb file not yet discovered
+                for rname in remote_files:
+                    if rname.startswith("file_") and rname.endswith(".duckdb"):
+                        sid = rname.replace(".duckdb", "")
+                        if sid not in self.sources:
+                            self._restore_file_source(sid)
             except Exception as e:
-                print(f"[DataSourceManager] Failed to list Supabase Storage sources: {e}")
+                print(f"[DataSourceManager] Remote discovery failed: {e}")
+
+    def _load_persisted_file_sources(self) -> None:
+        """Re-register uploaded DuckDB datasets after server restart."""
+        self.discover_persisted_sources()
 
     def _default_source_record(self) -> Optional[Dict[str, Any]]:
         try:
@@ -631,7 +721,12 @@ class DataSourceManager:
         if not source_id or source_id == "default":
             return self._default_source_record()
         if source_id in self.sources:
-            return self.sources[source_id]
+            rec = self.sources[source_id]
+            if rec.get("type") == "file" and rec.get("db") is None:
+                restored = self._restore_file_source(source_id)
+                if restored and restored.get("db") is not None:
+                    return restored
+            return rec
         restored = self._restore_file_source(source_id)
         if restored:
             return restored
