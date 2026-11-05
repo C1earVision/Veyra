@@ -62,6 +62,11 @@ class RagAgent(GeneralAgent):
         else:
             self.dataBaseConnection = dataBaseConnection()
             self.db = self.dataBaseConnection.connection()
+        if self.db is None:
+            raise RuntimeError(
+                "Please connect to a database first to answer questions about your data. "
+                "You can connect a database or upload a dataset using the Data Source button in the sidebar."
+            )
         toolkit_llm = self.model_loader.get_primary_model()
         self.sqlToolKit = SQLDatabaseToolkit(db=self.db, llm=toolkit_llm)
         self.web_search = webSearch()
@@ -93,6 +98,11 @@ class analysisAgent(GeneralAgent):
         else:
             self.dataBaseConnection = dataBaseConnection()
             self.db = self.dataBaseConnection.connection()
+        if self.db is None:
+            raise RuntimeError(
+                "Please connect to a database first to answer questions about your data. "
+                "You can connect a database or upload a dataset using the Data Source button in the sidebar."
+            )
         toolkit_llm = self.model_loader.get_primary_model()
         self.sqlToolKit = SQLDatabaseToolkit(db=self.db, llm=toolkit_llm)
         self.runPythonTools = runPython()

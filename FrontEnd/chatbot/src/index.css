@@ -184,3 +184,91 @@ input[type="range"]::-moz-range-thumb {
 .leaflet-popup-close-button {
   color: #8C93A0 !important;
 }
+
+/* ===== Dashboard, Chart & Table Animations ===== */
+@keyframes dashboardIn {
+  0% {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cardEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.988);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes kpiEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes tableEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tableRowFadeIn {
+  0% {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-dashboard-in {
+  animation: dashboardIn 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-card-enter {
+  animation: cardEnter 0.48s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-kpi-enter {
+  animation: kpiEnter 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-table-in {
+  animation: tableEnter 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-table-row {
+  animation: tableRowFadeIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-dashboard-in,
+  .animate-card-enter,
+  .animate-kpi-enter,
+  .animate-table-in,
+  .animate-table-row {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

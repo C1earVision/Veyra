@@ -28,6 +28,12 @@ import os
 
 EmitFn = Callable[[str, dict], Any]
 
+DATABASE_REQUIRED_AGENTS = ("use_rag_agent", "use_data_analysis_and_visualization_agent")
+NO_DATABASE_CONNECTED_MESSAGE = (
+    "Please connect to a database first to answer questions about your data. "
+    "You can connect a database or upload a dataset (CSV/Excel) using the Data Source button in the sidebar."
+)
+
 
 def _normalize_agent_choice(raw: Any) -> str:
     text = message_content_to_str(raw)
@@ -110,6 +116,16 @@ async def run_query(
     trace_steps = build_agent_steps(router_run.messages)
     agent_choice = _normalize_agent_choice(router_run.content)
 
+    # Check: If the question requires querying a database, verify that a database is connected first
+    if agent_choice in DATABASE_REQUIRED_AGENTS and not active_db:
+        return QueryResponse(
+            answer=NO_DATABASE_CONNECTED_MESSAGE,
+            agent=agent_choice,
+            steps=trace_steps,
+            source_id=active_source["source_id"] if active_source else None,
+            source_name=active_source["name"] if active_source else None,
+        )
+
     specialist_run = None
     final_raw: Any = None
 
@@ -121,12 +137,17 @@ async def run_query(
             cancel_scope=cancel_scope,
         )
     elif agent_choice == "use_rag_agent":
-        specialist_run = await use_agent_fn(
-            messages,
-            build_specialist_graph(agent_choice, query, active_db),
-            request=request,
-            cancel_scope=cancel_scope,
-        )
+        try:
+            specialist = build_specialist_graph(agent_choice, query, active_db)
+            specialist_run = await use_agent_fn(
+                messages,
+                specialist,
+                request=request,
+                cancel_scope=cancel_scope,
+            )
+        except Exception as e:
+            print(f"[pipeline] Error initializing {agent_choice}: {e}")
+            final_raw = f"Unable to query database: {e}"
     elif agent_choice == "use_crud_agent":
         if is_admin:
             specialist_run = await use_agent_fn(
@@ -217,6 +238,17 @@ async def run_query_stream(
     )
     await emit("agent", {"agent": agent_choice})
 
+    # Check: If the question requires querying a database, verify that a database is connected first
+    if agent_choice in DATABASE_REQUIRED_AGENTS and not active_db:
+        await emit("status", {"phase": "specialist", "text": "Database not connected"})
+        return QueryResponse(
+            answer=NO_DATABASE_CONNECTED_MESSAGE,
+            agent=agent_choice,
+            steps=trace_steps,
+            source_id=active_source["source_id"] if active_source else None,
+            source_name=active_source["name"] if active_source else None,
+        )
+
     final_raw: Any = None
     specialist_messages = None
 
@@ -247,7 +279,13 @@ async def run_query_stream(
         "use_rag_agent",
         "use_crud_agent",
     ):
-        specialist = build_specialist_graph(agent_choice, query, active_db)
+        try:
+            specialist = build_specialist_graph(agent_choice, query, active_db)
+        except Exception as e:
+            print(f"[pipeline stream] Failed to initialize {agent_choice}: {e}")
+            final_raw = f"Unable to run {agent_choice}: {e}"
+            specialist = None
+
         if specialist is not None:
             await emit(
                 "status",

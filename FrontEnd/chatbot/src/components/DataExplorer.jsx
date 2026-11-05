@@ -440,7 +440,7 @@ export default function DataExplorer({
                   </pre>
                 </div>
               ) : previewColumns.length > 0 ? (
-                <table className="w-max min-w-full text-[12.5px] border-collapse divide-y divide-[#222634]">
+                <table className="w-max min-w-full text-[12.5px] border-collapse divide-y divide-[#222634] animate-table-in">
                   <thead className="sticky top-0 z-10 bg-[#111319]">
                     <tr className="text-[#9CA3AF] text-left">
                       <th className="sticky left-0 z-20 bg-[#111319] px-3.5 py-2.5 font-medium text-[11.5px] uppercase tracking-wider text-[#6B7280] w-12 text-center border-r border-[#222634]">
@@ -461,7 +461,8 @@ export default function DataExplorer({
                       filteredRows.map((row, idx) => (
                         <tr
                           key={idx}
-                          className="text-[#D1D5DB] hover:bg-[#151820] transition-colors"
+                          className="text-[#D1D5DB] hover:bg-[#151820] transition-colors animate-table-row"
+                          style={{ animationDelay: `${Math.min(idx, 15) * 20}ms` }}
                         >
                           <td className="sticky left-0 z-10 bg-[#0F1117] hover:bg-[#151820] px-3.5 py-2 text-[11px] font-mono text-[#6B7280] text-center border-r border-[#222634] select-none">
                             {idx + 1}

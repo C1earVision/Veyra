@@ -111,6 +111,77 @@ export function formatCellLabel(val, key = "") {
   return str;
 }
 
+/* ─── Animated KPI Number Counter Component ─── */
+export function AnimatedKpiValue({ value, animKey }) {
+  const formatted = formatKpiDisplay(value);
+
+  // Match optional prefix, numeric part (with optional commas/decimals/signs), and optional suffix
+  const match = useMemo(() => {
+    return String(formatted).match(/^([^0-9.-]*)([-+]?[0-9,]+(?:\.[0-9]+)?)(.*)$/);
+  }, [formatted]);
+
+  const [displayVal, setDisplayVal] = useState(formatted);
+
+  useEffect(() => {
+    if (!match) {
+      setDisplayVal(formatted);
+      return;
+    }
+
+    const prefix = match[1] || "";
+    const rawNumStr = match[2].replace(/,/g, "");
+    const suffix = match[3] || "";
+    const target = parseFloat(rawNumStr);
+
+    if (isNaN(target)) {
+      setDisplayVal(formatted);
+      return;
+    }
+
+    const decParts = match[2].split(".");
+    const decimals = decParts.length > 1 ? decParts[1].length : 0;
+    const duration = 1000;
+    const startTime = performance.now();
+    let animId;
+
+    const tick = (now) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      // Smooth cubic ease-out
+      const ease = 1 - Math.pow(1 - progress, 3);
+      const current = target * ease;
+
+      const formattedNumber = current.toLocaleString(undefined, {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      });
+
+      setDisplayVal(`${prefix}${formattedNumber}${suffix}`);
+
+      if (progress < 1) {
+        animId = requestAnimationFrame(tick);
+      } else {
+        setDisplayVal(formatted);
+      }
+    };
+
+    setDisplayVal(
+      `${prefix}${(0).toLocaleString(undefined, {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+      })}${suffix}`
+    );
+
+    animId = requestAnimationFrame(tick);
+    return () => {
+      if (animId) cancelAnimationFrame(animId);
+    };
+  }, [formatted, animKey, match]);
+
+  return <span>{displayVal}</span>;
+}
+
+
 /* ─── Normalizer for Backward & Forward Compatibility ─── */
 function normalizeDashboardSpec(spec) {
   if (!spec) return null;
@@ -842,7 +913,7 @@ function DashboardSliderControl({ slider, value, onChange, onReset, affectedChar
 }
 
 /* ─── Slider Chart (Legacy Fallback) ─── */
-function SliderChart({ chart, height = 290 }) {
+function SliderChart({ chart, height = 290, animKey = "0", isExporting = false }) {
   const filterKey = chart.filterKey || chart.dataKeys?.[0]?.key || "value";
   const xKey = chart.xAxisKey || "name";
   const allData = useMemo(() => (Array.isArray(chart.data) ? chart.data : []), [chart.data]);
@@ -910,7 +981,7 @@ function SliderChart({ chart, height = 290 }) {
             No items match this threshold
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer key={`slider-chart-${animKey}`} width="100%" height="100%">
             <BarChart data={filtered} margin={MARGIN}>
               <CartesianGrid {...GRID_PROPS} />
               <XAxis dataKey={xKey} {...X_AXIS_PROPS} />
@@ -925,6 +996,10 @@ function SliderChart({ chart, height = 290 }) {
                   fill={dk.color || COLORS[i % COLORS.length]}
                   radius={[3, 3, 0, 0]}
                   maxBarSize={36}
+                  isAnimationActive={!isExporting}
+                  animationDuration={900}
+                  animationEasing="ease-out"
+                  animationBegin={i * 80}
                 />
               ))}
             </BarChart>
@@ -936,7 +1011,7 @@ function SliderChart({ chart, height = 290 }) {
 }
 
 /* ─── Chart Card ─── */
-function ChartCard({ chart, onExpand, expanded = false }) {
+function ChartCard({ chart, onExpand, expanded = false, animKey = "0", isExporting = false }) {
   const rawType = (chart.type || "bar").toLowerCase();
   const type = rawType === "distribution" ? "donut" : rawType;
   const [view, setView] = useState(type === "table" ? "table" : "chart");
@@ -1247,7 +1322,7 @@ function ChartCard({ chart, onExpand, expanded = false }) {
       {/* Content Area */}
       {view === "table" ? (
         /* ── Data Table (Styled matching RAG Markdown Table) ── */
-        <div className="w-full mt-2">
+        <div className="w-full mt-2 animate-table-in">
           {data.length === 0 ? (
             <div className="py-12 flex items-center justify-center text-[12px] text-[#64748B] rounded-lg border border-[#272B35] bg-[#10131B]">
               No data available
@@ -1300,7 +1375,7 @@ function ChartCard({ chart, onExpand, expanded = false }) {
                   </thead>
                   <tbody className="divide-y divide-[#1E2230] text-[#D1D5DB]">
                     {sortedData.map((row, ri) => (
-                      <tr key={ri} className="hover:bg-[#1A1E29]/70 transition-colors">
+                      <tr key={ri} className="hover:bg-[#1A1E29]/70 transition-colors animate-table-row" style={{ animationDelay: `${Math.min(ri, 15) * 22}ms` }}>
                         <td className="px-3.5 py-2.5 text-center font-mono text-[11px] text-[#6B7280] select-none">
                           {ri + 1}
                         </td>
@@ -1361,7 +1436,7 @@ function ChartCard({ chart, onExpand, expanded = false }) {
               Table view
             </div>
           ) : type === "line" ? (
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer key={`line-${animKey}-${chart.id || xKey}`} width="100%" height="100%">
               <LineChart data={data} margin={MARGIN}>
                 <CartesianGrid {...GRID_PROPS} />
                 <XAxis dataKey={xKey} {...X_AXIS_PROPS} />
@@ -1378,12 +1453,16 @@ function ChartCard({ chart, onExpand, expanded = false }) {
                     strokeWidth={2.2}
                     dot={{ fill: dk.color || COLORS[i % COLORS.length], r: 2.5, strokeWidth: 0 }}
                     activeDot={{ r: 4.5, stroke: "#151921", strokeWidth: 2 }}
+                    isAnimationActive={!isExporting}
+                    animationDuration={1300}
+                    animationEasing="ease-in-out"
+                    animationBegin={i * 120}
                   />
                 ))}
               </LineChart>
             </ResponsiveContainer>
           ) : type === "area" ? (
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer key={`area-${animKey}-${chart.id || xKey}`} width="100%" height="100%">
               <AreaChart data={data} margin={MARGIN}>
                 <defs>
                   {dataKeys.map((dk, i) => {
@@ -1420,13 +1499,17 @@ function ChartCard({ chart, onExpand, expanded = false }) {
                       strokeWidth={2}
                       fillOpacity={1}
                       fill={`url(#g_${dk.key})`}
+                      isAnimationActive={!isExporting}
+                      animationDuration={1200}
+                      animationEasing="ease-out"
+                      animationBegin={i * 120}
                     />
                   );
                 })}
               </AreaChart>
             </ResponsiveContainer>
           ) : type === "pie" || type === "donut" ? (
-            <ResponsiveContainer width="100%" height="100%" minWidth={100} minHeight={100}>
+            <ResponsiveContainer key={`pie-${animKey}-${chart.id || "pie"}`} width="100%" height="100%" minWidth={100} minHeight={100}>
               <PieChart>
                 <Tooltip content={<ChartTooltip />} />
                 <Legend {...LEGEND_PROPS} />
@@ -1441,6 +1524,10 @@ function ChartCard({ chart, onExpand, expanded = false }) {
                   paddingAngle={2}
                   stroke="#151921"
                   strokeWidth={2}
+                  isAnimationActive={!isExporting}
+                  animationDuration={1100}
+                  animationEasing="ease-out"
+                  animationBegin={80}
                 >
                   {cleanPieData.map((_, index) => (
                     <Cell
@@ -1454,10 +1541,10 @@ function ChartCard({ chart, onExpand, expanded = false }) {
           ) : type === "map" ? (
             <MapChart chart={chart} height={h} />
           ) : type === "slider" ? (
-            <SliderChart chart={chart} height={h} />
+            <SliderChart chart={chart} height={h} animKey={animKey} isExporting={isExporting} />
           ) : (
             /* Default: Bar */
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer key={`bar-${animKey}-${chart.id || xKey}`} width="100%" height="100%">
               <BarChart data={data} margin={MARGIN}>
                 <CartesianGrid {...GRID_PROPS} />
                 <XAxis dataKey={xKey} {...X_AXIS_PROPS} />
@@ -1472,6 +1559,10 @@ function ChartCard({ chart, onExpand, expanded = false }) {
                     fill={dk.color || COLORS[i % COLORS.length]}
                     radius={[3, 3, 0, 0]}
                     maxBarSize={36}
+                    isAnimationActive={!isExporting}
+                    animationDuration={1100}
+                    animationEasing="ease-out"
+                    animationBegin={i * 120}
                   />
                 ))}
               </BarChart>
@@ -1484,7 +1575,7 @@ function ChartCard({ chart, onExpand, expanded = false }) {
 }
 
 /* ─── Chart Expand Modal ─── */
-function ChartModal({ chart, onClose }) {
+function ChartModal({ chart, onClose, isExporting = false }) {
   if (!chart) return null;
   return createPortal(
     <div
@@ -1492,7 +1583,7 @@ function ChartModal({ chart, onClose }) {
       onClick={onClose}
     >
       <div
-        className="w-full max-w-4xl bg-[#10131B] border border-[#222734] rounded-xl p-5 sm:p-6 relative shadow-2xl max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-4xl bg-[#10131B] border border-[#222734] rounded-xl p-5 sm:p-6 relative shadow-2xl max-h-[90vh] overflow-y-auto animate-card-enter"
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -1509,7 +1600,7 @@ function ChartModal({ chart, onClose }) {
           <p className="text-[12px] text-[#8C93A0] mb-4">{chart.description}</p>
         )}
         <div className="w-full">
-          <ChartCard chart={chart} expanded />
+          <ChartCard chart={chart} expanded animKey={`modal-${chart.id || "c"}`} isExporting={isExporting} />
         </div>
       </div>
     </div>,
@@ -2066,7 +2157,15 @@ export default function InteractiveDashboard({ spec }) {
   const [sliderValues, setSliderValues] = useState({});
   const [isExporting, setIsExporting] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
+  const [fullscreenKey, setFullscreenKey] = useState(0);
   const dashboardRef = useRef(null);
+
+  // When user enters full screen, increment fullscreenKey so animations restart
+  useEffect(() => {
+    if (isFullscreen) {
+      setFullscreenKey((k) => k + 1);
+    }
+  }, [isFullscreen]);
 
   /* Wrapped export handlers: show overlay, run export, hide overlay */
   const handleExportPdf = useCallback(async () => {
@@ -2191,8 +2290,10 @@ export default function InteractiveDashboard({ spec }) {
     filteredCharts.length === 1 ? "grid-cols-1" : "grid-cols-1 lg:grid-cols-2";
 
   /* ─── Dashboard body (shared between inline and fullscreen) ─── */
-  const body = (fs = false) => (
-    <div ref={dashboardRef} className="space-y-4 kadash-bi-dashboard">
+  const body = (fs = false) => {
+    const currentAnimKey = `${fs ? "fs" : "inline"}-p${activePageIndex}-${fullscreenKey}`;
+    return (
+    <div key={currentAnimKey} ref={dashboardRef} className="space-y-4 kadash-bi-dashboard animate-dashboard-in">
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-4 border-b border-[#202734]">
         <div className="min-w-0 flex-1">
@@ -2315,15 +2416,16 @@ export default function InteractiveDashboard({ spec }) {
 
             return (
               <div
-                key={idx}
-                className={`bg-[#151921] border border-[#222734] rounded-lg p-3.5 sm:p-4 hover:border-[#2C3547] transition-all shadow-xs flex flex-col justify-between ${isFifthOfFive ? "col-span-2 sm:col-span-1 lg:col-span-1" : ""
+                key={`${idx}-${currentAnimKey}`}
+                className={`bg-[#151921] border border-[#222734] rounded-lg p-3.5 sm:p-4 hover:border-[#2C3547] transition-all shadow-xs flex flex-col justify-between animate-kpi-enter ${isFifthOfFive ? "col-span-2 sm:col-span-1 lg:col-span-1" : ""
                   }`}
+                style={{ animationDelay: `${idx * 55}ms` }}
               >
                 <div className="text-[11px] text-[#94A3B8] font-semibold uppercase tracking-wider truncate mb-1">
                   {kpi.label}
                 </div>
                 <div className="text-[22px] sm:text-[25px] font-bold text-[#FFFFFF] tracking-tight font-mono my-1 leading-tight">
-                  {formatKpiDisplay(kpi.value)}
+                  <AnimatedKpiValue value={kpi.value} animKey={currentAnimKey} />
                 </div>
                 {changeStr ? (
                   <div className="flex items-center gap-1.5 mt-1 flex-wrap">
@@ -2363,7 +2465,7 @@ export default function InteractiveDashboard({ spec }) {
 
       {/* ── Key Insights Banner ── */}
       {insights.length > 0 && (
-        <div className="bg-[#131720]/80 border border-[#202734] rounded-lg p-3.5 px-4">
+        <div key={`insights-${currentAnimKey}`} className="bg-[#131720]/80 border border-[#202734] rounded-lg p-3.5 px-4 animate-card-enter">
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[#94A3B8] mb-2">
             <Sparkles size={12} className="text-[#10B981]" />
             <span>Key Findings</span>
@@ -2381,7 +2483,7 @@ export default function InteractiveDashboard({ spec }) {
 
       {/* ── Standalone Sliders Section ── */}
       {activeSliders.length > 0 && (
-        <div>
+        <div key={`sliders-${currentAnimKey}`} className="animate-card-enter">
           <div className="flex items-center justify-between mb-2">
             <div className="text-[10.5px] text-[#8C93A0] font-semibold uppercase tracking-wider flex items-center gap-1.5">
               <SlidersHorizontal size={12} className="text-[#10B981]" />
@@ -2435,15 +2537,18 @@ export default function InteractiveDashboard({ spec }) {
             const isTable = (chart.type || "").toLowerCase() === "table";
             return (
               <div
-                key={chart.id || idx}
+                key={`${chart.id || idx}-${currentAnimKey}`}
                 id={`chart-card-${chart.id || idx}`}
-                className={`bg-[#151921] border border-[#222734] rounded-lg p-4 sm:p-4.5 hover:border-[#2C3547] transition-all shadow-xs ${isTable ? "col-span-full" : ""
+                className={`bg-[#151921] border border-[#222734] rounded-lg p-4 sm:p-4.5 hover:border-[#2C3547] transition-all shadow-xs animate-card-enter ${isTable ? "col-span-full" : ""
                   }`}
+                style={{ animationDelay: `${idx * 75}ms` }}
               >
                 <ChartCard
                   chart={chart}
                   onExpand={setModalChart}
                   expanded={fs}
+                  animKey={currentAnimKey}
+                  isExporting={isExporting}
                 />
               </div>
             );
@@ -2451,7 +2556,8 @@ export default function InteractiveDashboard({ spec }) {
         </div>
       )}
     </div>
-  );
+    );
+  };
 
   return (
     <>
@@ -2509,7 +2615,7 @@ export default function InteractiveDashboard({ spec }) {
 
       {/* Chart expand modal (handled via portal inside ChartModal) */}
       {modalChart && (
-        <ChartModal chart={modalChart} onClose={() => setModalChart(null)} />
+        <ChartModal chart={modalChart} onClose={() => setModalChart(null)} isExporting={isExporting} />
       )}
     </>
   );

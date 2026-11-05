@@ -43,7 +43,7 @@ export function ChartImage({ src, alt }) {
 
   return (
     <>
-      <div className="mt-3 group relative inline-block max-w-xl rounded-lg border border-[#272B35] bg-[#0C0E13] overflow-hidden shadow-md">
+      <div className="mt-3 group relative inline-block max-w-xl rounded-lg border border-[#272B35] bg-[#0C0E13] overflow-hidden shadow-md animate-card-enter">
         <img
           src={src}
           alt={alt || "Generated visualization"}
@@ -198,7 +198,7 @@ const markdownComponents = {
 
   /* --- Table (GitHub Flavored Markdown) --- */
   table: ({ children }) => (
-    <div className="my-3.5 max-w-full overflow-x-auto rounded-lg border border-[#272B35] bg-[#10131B] shadow-sm">
+    <div className="my-3.5 max-w-full overflow-x-auto rounded-lg border border-[#272B35] bg-[#10131B] shadow-sm animate-table-in">
       <table className="w-full min-w-[500px] text-[13px] border-collapse text-left">
         {children}
       </table>
@@ -213,7 +213,7 @@ const markdownComponents = {
     <tbody className="divide-y divide-[#1E2230] text-[#D1D5DB]">{children}</tbody>
   ),
   tr: ({ children }) => (
-    <tr className="hover:bg-[#1A1E29]/70 transition-colors">{children}</tr>
+    <tr className="hover:bg-[#1A1E29]/70 transition-colors animate-table-row">{children}</tr>
   ),
   th: ({ children, style }) => (
     <th

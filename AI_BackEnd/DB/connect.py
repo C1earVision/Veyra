@@ -15,6 +15,22 @@ class dataBaseConnection:
         self.port = os.environ.get("DATABASE_PORT", "5432")
 
     def connection(self):
+        missing = [
+            var
+            for var, val in [
+                ("DATABASE_SERVER", self.server),
+                ("DATABASE_NAME", self.database),
+                ("DATABASE_USER_NAME", self.username),
+                ("DATABASE_PASS", self.password),
+            ]
+            if not val
+        ]
+        if missing:
+            print(
+                f"[DB] Cannot connect to default database: Missing environment variable(s): {', '.join(missing)}"
+            )
+            return None
+
         use_ssl = (
             os.environ.get("DATABASE_SSL", "").lower() == "true"
             or (self.server and "supabase" in self.server)
@@ -27,23 +43,25 @@ class dataBaseConnection:
         resolved_host = self.server
         engine_args = {}
         is_ipv6_host = False
-        if self.server and not self.server.replace(".", "").replace("-", "").isdigit():
-            ip, is_ipv6 = _resolve_host(self.server)
-            is_ipv6_host = is_ipv6
-            if ip is not None:
-                if is_ipv6:
-                    # For IPv6: keep original hostname in the URL (for SSL SNI)
-                    # and pass the resolved IP via libpq's hostaddr param so
-                    # psycopg2 skips its own DNS resolution entirely.
-                    engine_args["connect_args"] = {"hostaddr": ip}
-
-        connection_string = (
-            f"postgresql+psycopg2://{self.username}:{quote_plus(self.password)}@{resolved_host}:{self.port}/{self.database}{ssl_param}"
-        )
-
         try:
+            if self.server and not self.server.replace(".", "").replace("-", "").isdigit():
+                ip, is_ipv6 = _resolve_host(self.server)
+                is_ipv6_host = is_ipv6
+                if ip is not None:
+                    if is_ipv6:
+                        # For IPv6: keep original hostname in the URL (for SSL SNI)
+                        # and pass the resolved IP via libpq's hostaddr param so
+                        # psycopg2 skips its own DNS resolution entirely.
+                        engine_args["connect_args"] = {"hostaddr": ip}
+
+            escaped_pass = quote_plus(str(self.password or ""))
+            connection_string = (
+                f"postgresql+psycopg2://{self.username}:{escaped_pass}@{resolved_host}:{self.port}/{self.database}{ssl_param}"
+            )
+
             db = SQLDatabase.from_uri(connection_string, engine_args=engine_args)
             print("Successfully connected to PostgreSQL database.")
+            return db
         except Exception as e:
             friendly_err = format_db_connection_error(
                 e,
@@ -54,5 +72,4 @@ class dataBaseConnection:
                 is_ipv6=is_ipv6_host,
             )
             print(f"Failed to connect to the database:\n{friendly_err}")
-            db = None
-        return db
+            return None
