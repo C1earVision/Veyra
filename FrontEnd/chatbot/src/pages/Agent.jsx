@@ -325,8 +325,8 @@ const PROMPT_SUGGESTIONS = [
   {
     icon: LayoutDashboard,
     badge: "bg-blue-500/10 text-blue-400 border border-blue-500/20",
-    title: "PowerBI Dashboard",
-    prompt: "Generate a comprehensive multi-page PowerBI business dashboard with revenue trends, category breakdown, and operational insights",
+    title: "Dashboard",
+    prompt: "Generate a comprehensive multi-page business dashboard with revenue trends, category breakdown, and operational insights",
     description: "Multi-page interactive report with executive takeaways and KPIs",
   },
   {
