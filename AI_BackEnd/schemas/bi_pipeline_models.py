@@ -102,6 +102,10 @@ class SingleChartPlan(BaseModel):
         description="Visualization type; use 'table' when the user asked for tabular output"
     )
     sql: str = Field(description="Single SELECT query to populate the visualization")
+    dataSourceId: str = Field(
+        description="The identifier for the SQL result to be used (typically 'single')",
+        default="single"
+    )
     xAxisKey: str = Field(
         description="Primary category/label column (first column for tables when applicable)"
     )
@@ -138,7 +142,11 @@ class ChartSpec(BaseModel):
     type: Literal["area", "line", "bar", "donut", "pie", "map", "slider", "table"]
     xAxisKey: str
     dataKeys: List[ChartDataKeySpec]
-    data: List[Dict[str, Any]]
+    data: List[Dict[str, Any]] = Field(default_factory=list)
+    dataSourceId: Optional[str] = Field(
+        default=None,
+        description="Reference key (e.g. 'q1') to the executed query result used to populate this chart"
+    )
 
     # ── Map-specific fields ──
     latKey: Optional[str] = Field(default=None, description="Column name for latitude values (map charts only)")

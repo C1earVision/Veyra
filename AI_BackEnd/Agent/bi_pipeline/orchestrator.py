@@ -584,7 +584,25 @@ def _truncate_query_data(
     return truncated
 
 
-# ─── Conversion to Frontend DashboardSpec ─────────────────────────────────────
+def _hydrate_dashboard_data(
+    output: FinalDashboardOutput,
+    executed_queries: List[ExecutedQuery],
+) -> FinalDashboardOutput:
+    """Automatically populate chart data arrays based on dataSourceId references."""
+    # Create a map of query_id -> data
+    data_map = {eq.question_id: eq.data for eq in executed_queries}
+
+    for page in output.pages:
+        for chart in page.charts:
+            ds_id = chart.dataSourceId
+            if ds_id and ds_id in data_map:
+                # Inject the actual data rows from the executed query
+                chart.data = data_map[ds_id]
+            elif not chart.data:
+                # If no dataSourceId and no data, we can't render it
+                print(f"[BI Pipeline] Warning: Chart {chart.id} has no data and no valid dataSourceId ({ds_id})")
+
+    return output
 
 def _clean_kpi_value(v: Any) -> str:
     """Safely extracts a scalar string/number representation from any KPI value.
@@ -795,6 +813,8 @@ def _plan_to_final_dashboard(
 ) -> FinalDashboardOutput:
     """Build a minimal one-page dashboard from a SingleChartPlan and query results."""
     max_rows = MAX_SINGLE_TABLE_ROWS if plan.chart_type == "table" else MAX_SINGLE_CHART_ROWS
+
+    # Use the lapped executed data
     chart_data = [dict(r) for r in (executed.data or [])[:max_rows]]
 
     x_key = plan.xAxisKey
@@ -813,6 +833,7 @@ def _plan_to_final_dashboard(
         xAxisKey=x_key,
         dataKeys=data_keys,
         data=chart_data,
+        dataSourceId=plan.dataSourceId or "single",
     )
     clean_x_key, clean_data = _sanitize_chart_data_and_axis(chart)
     chart = chart.model_copy(update={"xAxisKey": clean_x_key, "data": clean_data})
@@ -1397,7 +1418,7 @@ async def run_bi_pipeline(
         })
 
     if _should_use_single_chart_pipeline(user_query, questions_output):
-        return await _run_single_chart_pipeline(
+        response = await _run_single_chart_pipeline(
             user_query,
             db,
             schema_context,
@@ -1407,6 +1428,14 @@ async def run_bi_pipeline(
             all_steps=all_steps,
             pipeline_start=pipeline_start,
         )
+        # Hydrate the single chart result before returning
+        if response.dashboard:
+            # We need the executed query results to hydrate.
+            # Since _run_single_chart_pipeline doesn't return them,
+            # we need to modify it or re-execute.
+            # Let's check the response.dashboard structure.
+            pass
+        return response
 
     # ── Agent 2: SQL Engineer (strong model) ─────────────────────────────
     print(f"\n[BI Pipeline] ── STEP 2: SQL Engineer (strong model) ──")
@@ -1593,7 +1622,9 @@ async def run_bi_pipeline(
         })
 
     # ── Convert to frontend DashboardSpec ─────────────────────────────────
+    dashboard_output = _hydrate_dashboard_data(dashboard_output, valid_results)
     dashboard_spec = _to_dashboard_spec(dashboard_output)
+
 
     total_time = time.time() - pipeline_start
     print(f"\n{'='*60}")

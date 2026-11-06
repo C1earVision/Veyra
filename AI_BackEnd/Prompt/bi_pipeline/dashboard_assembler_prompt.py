@@ -49,12 +49,16 @@ Using the real data above, create a complete dashboard specification:
   * correlation → bar or line with multiple data keys
 
 ### DATA MAPPING RULES:
+- **DATA LINKING (CRITICAL)**: Every chart in the dashboard MUST be linked to its source data using the `dataSourceId` field.
+  - Set `dataSourceId` to the identifier of the business question that provided the data (e.g., "q1", "q2", "q3").
+  - **NEVER** attempt to manually copy-paste the data rows into the `data` array. Leave the `data` array empty []. The system will automatically inject the full result set based on the `dataSourceId`.
+  - If a query returned an error or empty results, omit that chart entirely.
 - `xAxisKey`: The column used for the X-axis (categories, dates, names).
   * CRITICAL: MUST ALWAYS be a human-readable column (e.g. `product_name`, `product_category_name`, `category`, `customer_city`, `customer_state`, `month`, `order_status`).
   * NEVER use `product_id`, `customer_id`, `order_id`, or any column containing UUIDs/hashes as `xAxisKey`!
   * If a query returns both an ID column and a name/category column, ALWAYS select the name/category column for `xAxisKey`.
-  * If a query only has an ID column and a metric (e.g. `product_id` and `order_count`), create a readable alias key in `data` like `"Top 1"`, `"Top 2"` or `"Product #" + product_id[:6]` and use that as `xAxisKey`. NEVER display raw 32-character hashes to the user!
-- `dataKeys`: Array of {{key, name, color}} for Y-axis values. Use refined enterprise hex colors:
+  * If a query only has an ID column and a metric (e.g. `product_id` and `order_count`), create a readable alias key in `data` like "Top 1", "Top 2" or "Product #" + product_id[:6] and use that as `xAxisKey`. NEVER display raw 32-character hashes to the user!
+- `dataKeys`: Array of {key, name, color} for Y-axis values. Use refined enterprise hex colors:
   * Blues (primary): #3B82F6, #60A5FA, #2563EB
   * Emeralds / Greens (secondary/positive): #10B981, #34D399, #059669
   * Ambers / Oranges (comparisons): #F59E0B, #FBBF24, #D97706
@@ -62,7 +66,6 @@ Using the real data above, create a complete dashboard specification:
   * Cyans / Teals: #06B6D4, #14B8A6
   * Reds / Corals (alerts/negative): #EF4444, #F87171
   * Avoid purple gradients or neon AI aesthetics; keep colors disciplined and distinct.
-- `data`: The actual rows from the query results. Use the data EXACTLY as provided — NEVER fabricate or modify numbers.
 - For KPIs:
   * `label`: Short, professional metric title (e.g. "Total Orders", "Top Product Volume", "Revenue").
   * `value`: The scalar formatted number or metric string (e.g. "527", "$12,450", "94.2%").
@@ -85,7 +88,7 @@ Sliders are **STANDALONE INTERACTIVE CONTROLS** in the dashboard, NOT charts. Th
 
 **SLIDER SCOPE — YOU DECIDE HOW MUCH IT AFFECTS:**
 Depending on user intent and what makes analytical sense, choose the appropriate `targetScope`:
-1. **`targetScope="all"`**: Affects the **ENTIRE DASHBOARD**. Use this when a metric is pervasive across multiple pages or macro-level (e.g., global order threshold, price cutoff, year/date floor). All charts across all pages that contain `filterKey` will be filtered in unison!
+1. **`targetScope="all"`**: Affects the **ENTIRE DASHBOARD**. Use this when a metric is pervasive across multiple pages or macro-level (e.g. global order threshold, price cutoff, year/date floor). All charts across all pages that contain `filterKey` will be filtered in unison!
 2. **`targetScope="page"`** (Default): Affects all matching charts on the **CURRENT PAGE**. Use this when the slider belongs to that page's specific theme (e.g. a "Product Pricing" page where dragging the price slider filters all product charts on that page).
 3. **`targetScope="chart"`**: Affects **ONLY ONE OR SPECIFIC CHART(S)**. Use this when only one detailed chart should be interactive (e.g. a high-density breakdown or a map) without altering the other summary charts on the page. In this case, you MUST set `targetChartIds=["chart_id_here"]`.
 

@@ -47,4 +47,7 @@ YOUR TASK
 
 6. Formulate a concise summary:
    - Provide a direct, professional answer in `summary` explaining the key findings and exact numbers in 2-3 bullet points.
+
+### DATA LINKING RULE:
+- Set `dataSourceId` to "single". The system will automatically populate the visualization using the result of your SQL query.
 """
