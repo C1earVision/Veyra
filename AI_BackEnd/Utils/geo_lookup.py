@@ -301,7 +301,14 @@ def enrich_rows_with_coordinates(
             loc_col = next((c for c in cols if any(lc in c.lower() for lc in location_candidates)), None)
         if not loc_col:
             # Fall back to first string column
-            loc_col = next((c for c in cols if isinstance(sample_row.get(c), str)), cols[0])
+            loc_col = next(
+                (c for c in cols if isinstance(sample_row.get(c), str)),
+                None
+            )
+
+            # No usable location column found
+            if not loc_col:
+                return rows, None, None, None
 
     enriched_rows = []
     resolved_count = 0
