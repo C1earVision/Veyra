@@ -1259,7 +1259,7 @@ function ChartCard({ chart, onExpand, expanded = false, animKey = "0", isExporti
     return formatCellLabel(val, col);
   };
 
-  const h = expanded ? 420 : (type === "map" ? 310 : 290);
+  const h = expanded ? 280 : (type === "map" ? 310 : 290);
 
   return (
     <div className={`group flex flex-col ${view === "table" ? "h-auto" : "h-full justify-between"}`}>
@@ -2293,9 +2293,9 @@ export default function InteractiveDashboard({ spec }) {
   const body = (fs = false) => {
     const currentAnimKey = `${fs ? "fs" : "inline"}-p${activePageIndex}-${fullscreenKey}`;
     return (
-    <div key={currentAnimKey} ref={dashboardRef} className="space-y-4 kadash-bi-dashboard animate-dashboard-in">
-      {/* ── Header ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-4 border-b border-[#202734]">
+    <div key={currentAnimKey} ref={dashboardRef} className={`${fs ? 'space-y-2' : 'space-y-4'} kadash-bi-dashboard animate-dashboard-in`}>
+      {/* ── Header (hidden in fullscreen) ── */}
+      {!fs && <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-4 border-b border-[#202734]">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2.5 flex-wrap">
             <h3 className="text-[18px] sm:text-[19px] font-bold text-[#F8FAFC] tracking-tight leading-snug">
@@ -2313,40 +2313,6 @@ export default function InteractiveDashboard({ spec }) {
         </div>
         <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
           <button
-            onClick={() => exportPageToCsv({ ...page, charts: filteredCharts }, report.title)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11.5px] font-medium bg-[#151921] hover:bg-[#1E2534] border border-[#222734] hover:border-[#2E374A] text-[#CBD5E1] hover:text-white transition-all shadow-xs cursor-pointer"
-            title="Export active page data as CSV"
-          >
-            <Download size={13} className="text-[#94A3B8]" />
-            <span>CSV</span>
-          </button>
-          <button
-            onClick={() => exportReportToXlsx(report, { ...page, charts: filteredCharts })}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11.5px] font-medium bg-[#151921] hover:bg-[#1E2534] border border-[#222734] hover:border-[#2E374A] text-[#CBD5E1] hover:text-white transition-all shadow-xs cursor-pointer"
-            title="Export full report to Excel (.xlsx) — Executive Summary + Data Tabs"
-          >
-            <FileSpreadsheet size={13} className="text-[#10B981]" />
-            <span>Excel</span>
-          </button>
-          <button
-            onClick={handleExportPdf}
-            disabled={isExporting}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11.5px] font-medium bg-[#151921] hover:bg-[#1E2534] border border-[#222734] hover:border-[#2E374A] text-[#CBD5E1] hover:text-white transition-all shadow-xs cursor-pointer ${isExporting ? 'opacity-50 pointer-events-none' : ''}`}
-            title="Export all pages as PDF report with charts, KPIs & layout"
-          >
-            <FileText size={13} className="text-[#EF4444]" />
-            <span>PDF</span>
-          </button>
-          <button
-            onClick={handleExportPptx}
-            disabled={isExporting}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11.5px] font-medium bg-[#151921] hover:bg-[#1E2534] border border-[#222734] hover:border-[#2E374A] text-[#CBD5E1] hover:text-white transition-all shadow-xs cursor-pointer ${isExporting ? 'opacity-50 pointer-events-none' : ''}`}
-            title="Export all pages as PowerPoint presentation"
-          >
-            <Presentation size={13} className="text-[#F59E0B]" />
-            <span>PPTX</span>
-          </button>
-          <button
             onClick={() => setIsFullscreen(!fs)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11.5px] font-medium bg-[#151921] hover:bg-[#1E2534] border border-[#222734] hover:border-[#2E374A] text-[#CBD5E1] hover:text-white transition-all shadow-xs cursor-pointer"
             title={fs ? "Exit fullscreen" : "Expand to fullscreen"}
@@ -2359,7 +2325,7 @@ export default function InteractiveDashboard({ spec }) {
             <span>{fs ? "Close" : "Expand"}</span>
           </button>
         </div>
-      </div>
+      </div>}
 
       {/* ── Page tabs ── */}
       {pages.length > 1 && (
@@ -2395,7 +2361,7 @@ export default function InteractiveDashboard({ spec }) {
       {/* ── KPIs Row ── */}
       {kpis.length > 0 && (
         <div
-          className={`grid gap-3.5 ${kpis.length === 1
+          className={`grid ${fs ? 'gap-2' : 'gap-3.5'} ${kpis.length === 1
               ? "grid-cols-1 max-w-sm"
               : kpis.length === 2
                 ? "grid-cols-1 sm:grid-cols-2"
@@ -2417,14 +2383,14 @@ export default function InteractiveDashboard({ spec }) {
             return (
               <div
                 key={`${idx}-${currentAnimKey}`}
-                className={`bg-[#151921] border border-[#222734] rounded-lg p-3.5 sm:p-4 hover:border-[#2C3547] transition-all shadow-xs flex flex-col justify-between animate-kpi-enter ${isFifthOfFive ? "col-span-2 sm:col-span-1 lg:col-span-1" : ""
+                className={`bg-[#151921] border border-[#222734] rounded-lg ${fs ? 'p-2.5 sm:p-3' : 'p-3.5 sm:p-4'} hover:border-[#2C3547] transition-all shadow-xs flex flex-col justify-between animate-kpi-enter ${isFifthOfFive ? "col-span-2 sm:col-span-1 lg:col-span-1" : ""
                   }`}
                 style={{ animationDelay: `${idx * 55}ms` }}
               >
                 <div className="text-[11px] text-[#94A3B8] font-semibold uppercase tracking-wider truncate mb-1">
                   {kpi.label}
                 </div>
-                <div className="text-[22px] sm:text-[25px] font-bold text-[#FFFFFF] tracking-tight font-mono my-1 leading-tight">
+                <div className={`${fs ? 'text-[18px] sm:text-[20px] my-0.5' : 'text-[22px] sm:text-[25px] my-1'} font-bold text-[#FFFFFF] tracking-tight font-mono leading-tight`}>
                   <AnimatedKpiValue value={kpi.value} animKey={currentAnimKey} />
                 </div>
                 {changeStr ? (
@@ -2532,14 +2498,14 @@ export default function InteractiveDashboard({ spec }) {
 
       {/* ── Charts Grid ── */}
       {filteredCharts.length > 0 && (
-        <div className={`grid gap-4 ${gridCols}`}>
+        <div className={`grid ${fs ? 'gap-2' : 'gap-4'} ${gridCols}`}>
           {filteredCharts.map((chart, idx) => {
             const isTable = (chart.type || "").toLowerCase() === "table";
             return (
               <div
                 key={`${chart.id || idx}-${currentAnimKey}`}
                 id={`chart-card-${chart.id || idx}`}
-                className={`bg-[#151921] border border-[#222734] rounded-lg p-4 sm:p-4.5 hover:border-[#2C3547] transition-all shadow-xs animate-card-enter ${isTable ? "col-span-full" : ""
+                className={`bg-[#151921] border border-[#222734] rounded-lg ${fs ? 'p-2.5 sm:p-3' : 'p-4 sm:p-4.5'} hover:border-[#2C3547] transition-all shadow-xs animate-card-enter ${isTable ? "col-span-full" : ""
                   }`}
                 style={{ animationDelay: `${idx * 75}ms` }}
               >
@@ -2576,17 +2542,15 @@ export default function InteractiveDashboard({ spec }) {
       {isFullscreen &&
         createPortal(
           <div className="fixed inset-0 z-[9999] bg-[#0D1017] overflow-y-auto animate-in fade-in duration-150">
-            <div className="max-w-[1400px] mx-auto px-6 sm:px-10 py-6 sm:py-8 relative">
-              <div className="flex justify-end mb-4">
-                <button
-                  onClick={() => setIsFullscreen(false)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#151921] border border-[#222734] text-[#8C93A0] hover:text-white hover:bg-[#1E2534] transition-all shadow-md cursor-pointer text-[12px] font-medium"
-                  title="Close (Esc)"
-                >
-                  <X size={15} />
-                  <span>Exit Fullscreen</span>
-                </button>
-              </div>
+            {/* Floating exit button — small, top-right */}
+            <button
+              onClick={() => setIsFullscreen(false)}
+              className="fixed top-3 right-3 z-[10000] p-1.5 rounded-lg bg-[#151921]/90 border border-[#222734] text-[#8C93A0] hover:text-white hover:bg-[#1E2534] transition-all shadow-md cursor-pointer backdrop-blur-sm"
+              title="Exit Fullscreen (Esc)"
+            >
+              <X size={16} />
+            </button>
+            <div className="max-w-[1400px] mx-auto px-6 sm:px-10 py-3 sm:py-4">
               {body(true)}
             </div>
           </div>,

@@ -959,6 +959,9 @@ export default function App() {
       if (!stream || stream.userStopped) return;
 
       if (!payload) {
+        // If the user navigated away during streaming and no done event was received,
+        // silently return instead of throwing — the stream will continue in the background
+        if (currentChatIdRef.current !== sessionId) return;
         throw new Error("No response from agent stream");
       }
 
@@ -1017,8 +1020,11 @@ export default function App() {
       if (err.name === "AbortError" || axios.isCancel(err)) {
         return;
       }
-      console.error("[Agent sendMessage error]:", err);
+      // If the user navigated away from this session, suppress the error
+      // as the stream will continue in the background
       const stream = activeStreams.get(sessionId);
+      if (stream?.userStopped) return;
+      console.error("[Agent sendMessage error]:", err);
       const prevList = stream?.messages || messages;
       const displayError = err.message || err.response?.data?.error || "Please try again.";
       const finalMessages = prevList
