@@ -16,6 +16,16 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
+  ScatterChart,
+  Scatter,
+  ZAxis,
+  Treemap,
+  TreemapNode,
+  RadarChart,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
+  Radar,
 } from "recharts";
 import {
   Maximize2,
