@@ -20,7 +20,6 @@ import {
   Scatter,
   ZAxis,
   Treemap,
-  TreemapNode,
   RadarChart,
   PolarGrid,
   PolarAngleAxis,
