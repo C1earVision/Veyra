@@ -65,6 +65,14 @@ const COLORS = [
   "#F43F5E", // Rose
   "#84CC16", // Lime
   "#8B5CF6", // Violet
+  "#FB7185", // Soft Rose
+  "#A855F7", // Purple
+  "#EC4899", // Pink
+  "#F97316", // Orange
+  "#22C55E", // Green
+  "#64748B", // Slate
+  "#B45309", // Deep Amber
+  "#1E40AF", // Deep Blue
 ];
 
 /* ─── Helpers for KPI and Label Formatting ─── */

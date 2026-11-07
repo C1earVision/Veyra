@@ -40,11 +40,19 @@ Using the real data above, create a complete dashboard specification:
 - **"map"**: For ANY geographic, spatial, or location-based data (customer distribution by state/city, regional sales, order origins, store/seller locations).
   * ALWAYS use "map" whenever a question has intent="geographic", when the user asks for a map/geographic view, or when data is grouped by geographic entities (e.g. `customer_state`, `customer_city`, `seller_state`, `state`, `city`, `uf`, `region`, `country`).
   * NOTE: You do NOT need raw latitude/longitude columns in the SQL data! The system has automatic built-in geocoding for all 27 Brazilian states (SP, RJ, MG, RS, PR, BA, SC, etc.), Brazilian cities, US states, and world cities.
+- **"scatter"**: For correlation analysis between two numeric metrics (e.g. "Price vs. Order Volume", "Shipping Cost vs. Delivery Time").
+- **"treemap"**: For hierarchical proportional data or when there are too many categories for a pie chart (e.g. "Revenue by Sub-category").
+- **"waterfall"**: For cumulative effect and variance analysis (e.g. "Revenue Growth Bridge", "Inventory Changes").
+- **"radar"**: For multi-dimensional comparison of a single entity across several metrics (e.g. "Product Performance Scorecard").
+- **"funnel"**: For linear process stages and conversion rates (e.g. "Order Lifecycle: Placed -> Processed -> Shipped -> Delivered").
 - Match chart type to the question's analytical intent:
   * geographic → map (ALWAYS use "map" for geographic/location questions)
   * trend → area/line
-  * comparison → bar
-  * distribution → donut/pie
+  * comparison → bar / radar
+  * distribution → donut/pie / treemap
+  * correlation → scatter
+  * process/conversion → funnel
+  * variance/bridge → waterfall
   * kpi → KPI card (no chart needed, use kpis array)
   * correlation → bar or line with multiple data keys
 

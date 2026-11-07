@@ -139,7 +139,7 @@ class ChartSpec(BaseModel):
     id: str
     title: str
     description: str
-    type: Literal["area", "line", "bar", "donut", "pie", "map", "slider", "table"]
+    type: Literal["area", "line", "bar", "donut", "pie", "map", "slider", "table", "scatter", "treemap", "waterfall", "radar", "funnel"]
     xAxisKey: str
     dataKeys: List[ChartDataKeySpec]
     data: List[Dict[str, Any]] = Field(default_factory=list)
