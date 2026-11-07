@@ -435,9 +435,15 @@ export default function DataSourceModal({ isOpen, onClose, activeSource, onSelec
                   onChange={(e) => setConnString(e.target.value)}
                   className="w-full px-3.5 py-2 text-[13px] bg-[#0F1117] border border-[#272B35] rounded-md text-[#F3F4F6] placeholder-[#4B5563] focus:outline-none focus:border-blue-500 transition-colors font-mono"
                 />
-                <p className="text-[11.5px] text-[#6B7280] mt-1">
-                  Supports PostgreSQL, MySQL, SQLite, and SQL Server.
-                </p>
+                <div className="flex flex-col gap-1 mt-1">
+                  <p className="text-[11.5px] text-[#6B7280]">
+                    Supports PostgreSQL, MySQL, SQLite, and SQL Server.
+                  </p>
+                  <p className="text-[11px] text-blue-400/80 flex items-center gap-1 font-medium">
+                    <AlertCircle size={10} className="shrink-0" />
+                    Important: Use an IPv4 session pooler URL for best compatibility.
+                  </p>
+                </div>
               </div>
 
               <div>
