@@ -58,7 +58,7 @@ Using the real data above, create a complete dashboard specification:
   * NEVER use `product_id`, `customer_id`, `order_id`, or any column containing UUIDs/hashes as `xAxisKey`!
   * If a query returns both an ID column and a name/category column, ALWAYS select the name/category column for `xAxisKey`.
   * If a query only has an ID column and a metric (e.g. `product_id` and `order_count`), create a readable alias key in `data` like "Top 1", "Top 2" or "Product #" + product_id[:6] and use that as `xAxisKey`. NEVER display raw 32-character hashes to the user!
-- `dataKeys`: Array of {key, name, color} for Y-axis values. Use refined enterprise hex colors:
+- `dataKeys`: Array of {{key, name, color}} for Y-axis values. Use refined enterprise hex colors:
   * Blues (primary): #3B82F6, #60A5FA, #2563EB
   * Emeralds / Greens (secondary/positive): #10B981, #34D399, #059669
   * Ambers / Oranges (comparisons): #F59E0B, #FBBF24, #D97706
