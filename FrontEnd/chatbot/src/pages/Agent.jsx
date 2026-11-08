@@ -1031,7 +1031,7 @@ export default function App() {
         .filter((msg) => !msg.isLoading)
         .concat({
           role: "AI_Message",
-          content: `AI Error: ${displayError}`,
+          content: `AI Error: ${displayError}, This request took more than 300 seconds to finish which exceedes Vercel free limit. Try again in a while.`,
         });
 
       if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
