@@ -1644,6 +1644,416 @@ async def run_bi_pipeline(
     )
 
 
+# ─── Checkpoint Strategy: Split Pipeline into Two Phases ──────────────────────
+
+async def run_bi_data_phase(
+    user_query: str,
+    db,
+    tables: List[str],
+    *,
+    model_id: Optional[str] = None,
+    emit: Optional[EmitFn] = None,
+    request=None,
+    cancel_scope: Optional[QueryCancelScope] = None,
+) -> Dict[str, Any]:
+    """Phase 1 of the checkpoint strategy: Schema → Questions → SQL → Execution.
+
+    Runs Steps 0-3 of the BI pipeline and returns intermediate results
+    so they can be passed to run_bi_assembly_phase in a separate request,
+    giving each phase its own fresh Vercel timeout window.
+
+    Returns:
+        Dict with keys:
+        - executed_queries: List of ExecutedQuery dicts (serialized)
+        - all_steps: List of AgentStep dicts (serialized)
+        - questions_output: BusinessQuestionsOutput dict (serialized)
+        - user_query: The original user query
+        - is_single_chart: Whether the single-chart pipeline was used
+        - single_chart_response: If single-chart path was taken, the full QueryResponse dict
+    """
+    pipeline_start = time.time()
+    print(f"\n{'='*60}")
+    print(f"[BI Pipeline] === DATA PHASE START ===")
+    print(f"[BI Pipeline] Query: {user_query[:100]}{'…' if len(user_query) > 100 else ''}")
+    print(f"[BI Pipeline] Tables: {tables}")
+    print(f"[BI Pipeline] Model ID: {model_id or 'default'}")
+    print(f"{'='*60}")
+
+    all_steps: List[AgentStep] = []
+
+    # ── STEP 0: Schema Context ──
+    print(f"\n[BI Pipeline] ── STEP 0: Schema Context ──")
+    if emit:
+        await emit("status", {"phase": "schema", "text": "Inspecting database schema…"})
+
+    schema_start = time.time()
+    schema_context = await asyncio.get_event_loop().run_in_executor(
+        None, build_schema_context, db, tables,
+    )
+    print(
+        f"[BI Pipeline] Schema context built: {len(schema_context)} chars "
+        f"({time.time() - schema_start:.1f}s)"
+    )
+
+    if emit:
+        await emit("step", {
+            "step": AgentStep(
+                type="tool_result",
+                label="Schema Inspection",
+                detail=f"Loaded schema for {len(tables)} tables with sample rows",
+            ).model_dump(),
+            "phase": "schema",
+        })
+
+    # ── STEP 1: Question Planner (local model) ──
+    print(f"\n[BI Pipeline] ── STEP 1: Question Planner (local model) ──")
+    if emit:
+        await emit("status", {
+            "phase": "question_planner",
+            "text": "Analyzing your question…",
+        })
+        await emit("step", {
+            "step": AgentStep(
+                type="reasoning",
+                label="Question Planner",
+                detail="Decomposing query into business questions…",
+            ).model_dump(),
+            "phase": "question_planner",
+        })
+
+    local_llm = _get_local_model(model_id)
+
+    planner_prompt = QUESTION_PLANNER_PROMPT.format(
+        schema_context=schema_context,
+    )
+
+    agent1_start = time.time()
+    try:
+        questions_output: BusinessQuestionsOutput = await _invoke_structured_agent(
+            llm=local_llm,
+            output_schema=BusinessQuestionsOutput,
+            system_prompt=planner_prompt,
+            user_message=user_query,
+            phase="question_planner",
+            emit=emit,
+            cancel_scope=cancel_scope,
+        )
+        print(
+            f"[BI Pipeline] Question Planner done ({time.time() - agent1_start:.1f}s): "
+            f"{len(questions_output.questions)} questions"
+        )
+    except Exception as e:
+        print(
+            f"[BI Pipeline] Question Planner FAILED ({time.time() - agent1_start:.1f}s): "
+            f"{e}. Using fallback questions."
+        )
+        if emit:
+            await emit("status", {
+                "phase": "question_planner",
+                "text": "Using fallback analysis strategy…",
+            })
+        questions_output = _generate_fallback_questions(tables)
+
+    for q in questions_output.questions:
+        print(f"[BI Pipeline]   {q.id}. [{q.intent.value}] {q.question}")
+
+    all_steps.append(AgentStep(
+        type="reasoning",
+        label="Question Planner Result",
+        detail=(
+            f"Intent: {questions_output.user_intent_summary}\n"
+            f"Single chart: {questions_output.is_single_chart}\n"
+            f"Questions ({len(questions_output.questions)}):\n"
+            + "\n".join(
+                f"  {q.id}. [{q.intent.value}] {q.question}"
+                for q in questions_output.questions
+            )
+        ),
+    ))
+
+    if emit:
+        await emit("step", {
+            "step": all_steps[-1].model_dump(),
+            "phase": "question_planner",
+        })
+
+    # ── Check for single-chart path ──
+    if _should_use_single_chart_pipeline(user_query, questions_output):
+        response = await _run_single_chart_pipeline(
+            user_query,
+            db,
+            schema_context,
+            model_id=model_id,
+            emit=emit,
+            cancel_scope=cancel_scope,
+            all_steps=all_steps,
+            pipeline_start=pipeline_start,
+        )
+        print(f"[BI Pipeline] === DATA PHASE COMPLETE (single chart path) ===")
+        return {
+            "is_single_chart": True,
+            "single_chart_response": response.model_dump(mode="json"),
+            "executed_queries": [],
+            "all_steps": [s.model_dump() for s in all_steps],
+            "questions_output": questions_output.model_dump(),
+            "user_query": user_query,
+        }
+
+    # ── STEP 2: SQL Engineer (strong model) ──
+    print(f"\n[BI Pipeline] ── STEP 2: SQL Engineer (strong model) ──")
+    if emit:
+        await emit("status", {
+            "phase": "sql_engineer",
+            "text": "Writing SQL queries…",
+        })
+
+    strong_llm = _get_strong_model(model_id)
+
+    questions_json = json.dumps(
+        [q.model_dump() for q in questions_output.questions],
+        indent=2,
+    )
+
+    sql_prompt = SQL_ENGINEER_PROMPT.format(
+        schema_context=schema_context,
+        questions_json=questions_json,
+    )
+
+    agent2_start = time.time()
+    sql_output: SQLQueriesOutput = await _invoke_structured_agent(
+        llm=strong_llm,
+        output_schema=SQLQueriesOutput,
+        system_prompt=sql_prompt,
+        user_message=f"Write SQL queries for these {len(questions_output.questions)} business questions.",
+        phase="sql_engineer",
+        emit=emit,
+        cancel_scope=cancel_scope,
+    )
+    print(
+        f"[BI Pipeline] SQL Engineer done ({time.time() - agent2_start:.1f}s): "
+        f"{len(sql_output.queries)} queries"
+    )
+
+    for q_spec in sql_output.queries:
+        print(f"[BI Pipeline]   {q_spec.question_id}: {q_spec.sql[:100]}…")
+        all_steps.append(AgentStep(
+            type="tool_call",
+            label=f"SQL ({q_spec.question_id})",
+            detail=q_spec.sql[:800],
+        ))
+        if emit:
+            await emit("step", {
+                "step": all_steps[-1].model_dump(),
+                "phase": "sql_engineer",
+            })
+
+    # ── STEP 3: Parallel SQL Execution ──
+    print(f"\n[BI Pipeline] ── STEP 3: Parallel SQL Execution ──")
+    if emit:
+        await emit("status", {
+            "phase": "sql_execution",
+            "text": f"Executing {len(sql_output.queries)} queries in parallel…",
+        })
+
+    exec_start = time.time()
+    executed = await _execute_queries_parallel(
+        db, sql_output.queries, questions_output.questions, emit=emit,
+    )
+    print(
+        f"[BI Pipeline] SQL execution done ({time.time() - exec_start:.1f}s): "
+        f"{sum(1 for eq in executed if not eq.error)}/{len(executed)} succeeded"
+    )
+
+    # ── SQL Retry for failed queries ──
+    failed = [eq for eq in executed if eq.error]
+    succeeded = [eq for eq in executed if not eq.error]
+
+    if failed:
+        print(f"\n[BI Pipeline] ── STEP 3b: SQL Retry ({len(failed)} failed) ──")
+        if emit:
+            await emit("status", {
+                "phase": "sql_retry",
+                "text": f"Retrying {len(failed)} failed queries…",
+            })
+
+        retried = await _retry_failed_queries(
+            db, strong_llm, failed, schema_context,
+            questions_output.questions, emit=emit, cancel_scope=cancel_scope,
+        )
+
+        retried_map = {eq.question_id: eq for eq in retried}
+        executed = succeeded + [
+            retried_map.get(fq.question_id, fq) for fq in failed
+        ]
+
+        retry_succeeded = sum(1 for eq in retried if not eq.error)
+        print(f"[BI Pipeline] SQL retry: {retry_succeeded}/{len(failed)} fixed")
+
+    # Log execution results
+    for eq in executed:
+        status = f"✓ {eq.row_count} rows" if not eq.error else f"✗ {eq.error[:200]}"
+        all_steps.append(AgentStep(
+            type="tool_result",
+            label=f"Result ({eq.question_id})",
+            detail=f"{eq.question}: {status}",
+        ))
+
+    total_time = time.time() - pipeline_start
+    print(f"\n{'='*60}")
+    print(f"[BI Pipeline] === DATA PHASE COMPLETE ({total_time:.1f}s) ===")
+    print(f"{'='*60}\n")
+
+    return {
+        "is_single_chart": False,
+        "single_chart_response": None,
+        "executed_queries": [eq.model_dump() for eq in executed],
+        "all_steps": [s.model_dump() for s in all_steps],
+        "questions_output": questions_output.model_dump(),
+        "user_query": user_query,
+    }
+
+
+async def run_bi_assembly_phase(
+    user_query: str,
+    executed_queries_raw: List[Dict[str, Any]],
+    questions_output_raw: Dict[str, Any],
+    all_steps_raw: List[Dict[str, Any]],
+    *,
+    model_id: Optional[str] = None,
+    emit: Optional[EmitFn] = None,
+    cancel_scope: Optional[QueryCancelScope] = None,
+) -> QueryResponse:
+    """Phase 2 of the checkpoint strategy: Dashboard Assembly + Hydration.
+
+    Takes the serialized outputs from run_bi_data_phase and runs
+    Step 4 (Dashboard Assembler LLM) plus final hydration/conversion.
+
+    Args:
+        user_query: The original user query.
+        executed_queries_raw: List of ExecutedQuery dicts from data phase.
+        questions_output_raw: BusinessQuestionsOutput dict from data phase.
+        all_steps_raw: List of AgentStep dicts from data phase.
+        model_id: Optional model ID override.
+        emit: SSE emit function for streaming events.
+        cancel_scope: Cancellation scope.
+
+    Returns:
+        QueryResponse ready for the frontend.
+    """
+    assembly_start = time.time()
+    print(f"\n{'='*60}")
+    print(f"[BI Pipeline] === ASSEMBLY PHASE START ===")
+    print(f"[BI Pipeline] Query: {user_query[:100]}{'…' if len(user_query) > 100 else ''}")
+    print(f"[BI Pipeline] Received {len(executed_queries_raw)} executed queries")
+    print(f"{'='*60}")
+
+    # Deserialize inputs
+    all_steps = [AgentStep(**s) for s in all_steps_raw]
+    questions_output = BusinessQuestionsOutput(**questions_output_raw)
+    executed_queries = [ExecutedQuery(**eq) for eq in executed_queries_raw]
+
+    # Filter out failed/empty queries
+    valid_results = [eq for eq in executed_queries if not eq.error and eq.row_count > 0]
+
+    if not valid_results:
+        print(f"[BI Pipeline] ✗ No valid results — aborting assembly")
+        return QueryResponse(
+            answer="I was unable to retrieve data from the database to build the dashboard. "
+                   "The SQL queries returned errors or empty results. Please try rephrasing your question.",
+            agent="use_data_analysis_and_visualization_agent",
+            steps=all_steps,
+        )
+
+    # ── STEP 4: Dashboard Assembler (local model) ──
+    print(f"\n[BI Pipeline] ── STEP 4: Dashboard Assembler ──")
+    if emit:
+        await emit("status", {
+            "phase": "dashboard_assembler",
+            "text": "Designing dashboard layout…",
+        })
+
+    local_llm = _get_local_model(model_id)
+
+    truncated_data = _truncate_query_data(valid_results)
+    executed_queries_json = json.dumps(truncated_data, indent=2, default=str)
+
+    assembler_prompt = DASHBOARD_ASSEMBLER_PROMPT.format(
+        user_query=user_query,
+        executed_queries_json=executed_queries_json,
+    )
+
+    agent3_start = time.time()
+    try:
+        dashboard_output: FinalDashboardOutput = await _invoke_structured_agent(
+            llm=local_llm,
+            output_schema=FinalDashboardOutput,
+            system_prompt=assembler_prompt,
+            user_message=(
+                f"Build the dashboard for: {user_query}\n\n"
+                f"is_single_chart: {questions_output.is_single_chart}\n"
+                f"Number of data results: {len(valid_results)}"
+            ),
+            phase="dashboard_assembler",
+            emit=emit,
+            cancel_scope=cancel_scope,
+        )
+        print(
+            f"[BI Pipeline] Dashboard Assembler LLM completed ({time.time() - agent3_start:.1f}s): "
+            f"{len(dashboard_output.pages)} page(s) created"
+        )
+    except Exception as e:
+        print(
+            f"\n[BI Pipeline] ⚠️ Dashboard Assembler LLM failed ({e}). "
+            f"Switching to resilient fallback dashboard assembler..."
+        )
+        if emit:
+            await emit("status", {
+                "phase": "dashboard_assembler",
+                "text": "Assembling dashboard layout from query results…",
+            })
+        dashboard_output = _build_fallback_dashboard_output(user_query, valid_results, questions_output)
+        print(
+            f"[BI Pipeline] Fallback dashboard assembler completed ({time.time() - agent3_start:.1f}s): "
+            f"{len(dashboard_output.pages)} page(s) generated"
+        )
+
+    all_steps.append(AgentStep(
+        type="reasoning",
+        label="Dashboard Assembler",
+        detail=(
+            f"Created {len(dashboard_output.pages)} page(s): "
+            + ", ".join(p.name for p in dashboard_output.pages)
+        ),
+    ))
+
+    if emit:
+        await emit("step", {
+            "step": all_steps[-1].model_dump(),
+            "phase": "dashboard_assembler",
+        })
+
+    # ── Convert to frontend DashboardSpec ──
+    dashboard_output = _hydrate_dashboard_data(dashboard_output, valid_results)
+    dashboard_spec = _to_dashboard_spec(dashboard_output)
+
+    total_time = time.time() - assembly_start
+    print(f"\n{'='*60}")
+    print(f"[BI Pipeline] === ASSEMBLY PHASE COMPLETE ({total_time:.1f}s) ===")
+    print(
+        f"[BI Pipeline] {len(dashboard_output.pages)} pages, "
+        f"{sum(len(p.charts) for p in dashboard_output.pages)} charts, "
+        f"{sum(len(p.kpis) for p in dashboard_output.pages)} KPIs"
+    )
+    print(f"{'='*60}\n")
+
+    return QueryResponse(
+        answer=dashboard_output.content,
+        agent="use_data_analysis_and_visualization_agent",
+        dashboard=dashboard_spec,
+        steps=all_steps,
+    )
+
+
 # ─── Fallback Question Generator (suggestion #4) ─────────────────────────────
 
 def _generate_fallback_questions(tables: List[str]) -> BusinessQuestionsOutput:

@@ -59,7 +59,7 @@ import {
   reconcileSourceWithServer,
   sourceFromQueryResponse,
 } from "../lib/dataSourceSync";
-import { streamAgentQuery } from "../lib/queryStream";
+import { streamAgentQuery, streamDataPhase, streamAssemblyPhase } from "../lib/queryStream";
 import { authHeaders, getStoredAuth } from "../lib/auth";
 
 /* ─── URL normaliser (unchanged logic) ─── */
@@ -889,71 +889,118 @@ export default function App() {
 
       let payload = null;
 
-      await streamAgentQuery(AI_API_URL, payLoad, {
+      // ─── Shared SSE event handler for both phases ───
+      const handleStreamEvent = (type, data) => {
+        const stream = activeStreams.get(sessionId);
+        if (!stream || stream.userStopped) return;
+
+        if (type === "thinking_delta" && data.text) {
+          stream.thinking += data.text;
+          if (data.phase === "router") {
+            stream.streamStatus = "Routing…";
+          }
+          stream.messages = stream.messages.map((msg) =>
+            msg.isLoading
+              ? {
+                  ...msg,
+                  thinking: stream.thinking,
+                  streamStatus: stream.streamStatus,
+                }
+              : msg
+          );
+          if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+            setMessages(stream.messages);
+          }
+        } else if (type === "step" && data.step) {
+          stream.steps = [...stream.steps, data.step];
+          stream.streamStatus = `${data.step.label}…`;
+          stream.messages = stream.messages.map((msg) =>
+            msg.isLoading
+              ? {
+                  ...msg,
+                  steps: stream.steps,
+                  streamStatus: stream.streamStatus,
+                }
+              : msg
+          );
+          if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+            setMessages(stream.messages);
+          }
+        } else if (type === "status" && data.text) {
+          stream.streamStatus = data.text;
+          stream.messages = stream.messages.map((msg) =>
+            msg.isLoading ? { ...msg, streamStatus: stream.streamStatus } : msg
+          );
+          if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+            setMessages(stream.messages);
+          }
+        } else if (type === "error") {
+          console.error("[stream error event received]", data);
+          if (data.error === "cancelled") {
+            const cancelled = new Error("cancelled");
+            cancelled.name = "AbortError";
+            throw cancelled;
+          }
+          const errorMsg =
+            data.error ||
+            data.detail ||
+            data.raw ||
+            (typeof data === "string" ? data : JSON.stringify(data));
+          throw new Error(errorMsg || "Stream failed");
+        }
+      };
+
+      // ─── Checkpoint Strategy: Two-phase streaming ───
+      // Phase 1: Data phase (Router → Schema → SQL → Execution)
+      let dataPhaseResult = null;
+
+      await streamDataPhase(AI_API_URL, payLoad, {
         signal: abortController.signal,
         headers: authHeaders(),
         onEvent: (type, data) => {
-          const stream = activeStreams.get(sessionId);
-          if (!stream || stream.userStopped) return;
-
-          if (type === "thinking_delta" && data.text) {
-            stream.thinking += data.text;
-            if (data.phase === "router") {
-              stream.streamStatus = "Routing…";
-            }
-            stream.messages = stream.messages.map((msg) =>
-              msg.isLoading
-                ? {
-                    ...msg,
-                    thinking: stream.thinking,
-                    streamStatus: stream.streamStatus,
-                  }
-                : msg
-            );
-            if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
-              setMessages(stream.messages);
-            }
-          } else if (type === "step" && data.step) {
-            stream.steps = [...stream.steps, data.step];
-            stream.streamStatus = `${data.step.label}…`;
-            stream.messages = stream.messages.map((msg) =>
-              msg.isLoading
-                ? {
-                    ...msg,
-                    steps: stream.steps,
-                    streamStatus: stream.streamStatus,
-                  }
-                : msg
-            );
-            if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
-              setMessages(stream.messages);
-            }
-          } else if (type === "status" && data.text) {
-            stream.streamStatus = data.text;
-            stream.messages = stream.messages.map((msg) =>
-              msg.isLoading ? { ...msg, streamStatus: stream.streamStatus } : msg
-            );
-            if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
-              setMessages(stream.messages);
-            }
-          } else if (type === "done") {
-            payload = normalizeQueryResponse(data);
-          } else if (type === "error") {
-            console.error("[stream error event received]", data);
-            if (data.error === "cancelled") {
-              const cancelled = new Error("cancelled");
-              cancelled.name = "AbortError";
-              throw cancelled;
-            }
-            const errorMsg =
-              data.error ||
-              data.detail ||
-              data.raw ||
-              (typeof data === "string" ? data : JSON.stringify(data));
-            throw new Error(errorMsg || "Stream failed");
+          if (type === "done") {
+            // Non-BI agent or single-chart path completed fully
+            payload = normalizeQueryResponse(data.final_response);
+          } else if (type === "data_phase_done") {
+            // BI dashboard: data phase complete, need assembly
+            dataPhaseResult = data.data_phase_result;
+          } else {
+            handleStreamEvent(type, data);
           }
         },
       });
+
+      // Phase 2: Assembly phase (if needed — fresh Vercel timeout window)
+      if (dataPhaseResult && !payload) {
+        const stream = activeStreams.get(sessionId);
+        if (stream && !stream.userStopped) {
+          stream.streamStatus = "Designing dashboard layout…";
+          stream.messages = stream.messages.map((msg) =>
+            msg.isLoading ? { ...msg, streamStatus: stream.streamStatus } : msg
+          );
+          if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {
+            setMessages(stream.messages);
+          }
+
+          const assemblyPayload = {
+            data_phase_result: dataPhaseResult,
+            model_id: selectedModel || null,
+            source_id: activeSource?.source_id,
+          };
+
+          await streamAssemblyPhase(AI_API_URL, assemblyPayload, {
+            signal: abortController.signal,
+            headers: authHeaders(),
+            onEvent: (type, data) => {
+              if (type === "done") {
+                payload = normalizeQueryResponse(data);
+              } else {
+                handleStreamEvent(type, data);
+              }
+            },
+          });
+        }
+      }
 
       const stream = activeStreams.get(sessionId);
       if (!stream || stream.userStopped) return;

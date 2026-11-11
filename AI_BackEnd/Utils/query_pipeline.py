@@ -12,7 +12,7 @@ from Agent.AgenticWorkFlow import (
     CrudAgent,
     analysisAgent,
 )
-from Agent.bi_pipeline.orchestrator import run_bi_pipeline
+from Agent.bi_pipeline.orchestrator import run_bi_pipeline, run_bi_data_phase, run_bi_assembly_phase
 from Prompt.generalSysPrompt import GENERAL_SYSTEM_PROMPT
 from Prompt.SearchSysPrompt import SEARCH_SYSTEM_PROMPT
 from Prompt.RagSysPropmt import RAG_SYSTEM_PROMPT
@@ -318,3 +318,173 @@ async def run_query_stream(
         source_id=active_source["source_id"] if active_source else "default",
         source_name=active_source["name"] if active_source else "Default Database",
     )
+
+
+
+async def run_query_stream_data_phase(
+    query,
+    active_source,
+    active_db,
+    emit: EmitFn,
+    request=None,
+    cancel_scope: Optional[QueryCancelScope] = None,
+    is_admin: bool = False,
+) -> dict:
+    """Checkpoint Phase 1: Route → Data Phase.
+
+    Returns a dict with the data-phase results (executed queries, steps, etc.)
+    or a 'final_response' key if the pipeline short-circuited (non-BI agent,
+    single-chart path, or permission denied).
+    """
+    router_model = _resolve_router_model(query.model_id)
+    router_provider = "gemini" if router_model and "gemini" in router_model.lower() else "groq"
+    graph = GeneralAgent(
+        system_prompt=GENERAL_SYSTEM_PROMPT,
+        model_provider=router_provider,
+        model_id=router_model,
+    )
+    general_agent = graph()
+    messages = {"messages": [query.question]}
+
+    await emit("status", {"phase": "router", "text": "Choosing specialist agent…"})
+    try:
+        router_messages = await stream_agent_run(
+            general_agent,
+            messages,
+            phase="router",
+            emit=emit,
+            request=request,
+            cancel_scope=cancel_scope,
+        )
+    except asyncio.CancelledError:
+        raise
+    trace_steps = build_agent_steps(router_messages)
+    agent_choice = _normalize_agent_choice(
+        message_content_to_str(getattr(router_messages[-1], "content", ""))
+        if router_messages
+        else ""
+    )
+    await emit("agent", {"agent": agent_choice})
+
+    # Check: database required?
+    if agent_choice in DATABASE_REQUIRED_AGENTS and not active_db:
+        await emit("status", {"phase": "specialist", "text": "Database not connected"})
+        return {
+            "final_response": QueryResponse(
+                answer=NO_DATABASE_CONNECTED_MESSAGE,
+                agent=agent_choice,
+                steps=trace_steps,
+                source_id=active_source["source_id"] if active_source else None,
+                source_name=active_source["name"] if active_source else None,
+            ).model_dump(mode="json")
+        }
+
+    # Non-BI agents or permission denied: run fully and return as final_response
+    needs_admin = agent_choice in ("use_crud_agent", "use_data_analysis_and_visualization_agent")
+    if needs_admin and not is_admin:
+        return {
+            "final_response": QueryResponse(
+                answer="User has no access to this information",
+                agent=agent_choice,
+                steps=trace_steps,
+                source_id=active_source["source_id"] if active_source else "default",
+                source_name=active_source["name"] if active_source else "Default Database",
+            ).model_dump(mode="json")
+        }
+
+    if agent_choice != "use_data_analysis_and_visualization_agent":
+        # Non-BI agent: run the specialist fully
+        final_raw = None
+        specialist_messages = None
+
+        if agent_choice in ("use_web_search_agent", "use_rag_agent", "use_crud_agent"):
+            try:
+                specialist = build_specialist_graph(agent_choice, query, active_db)
+            except Exception as e:
+                print(f"[pipeline stream] Failed to initialize {agent_choice}: {e}")
+                final_raw = f"Unable to run {agent_choice}: {e}"
+                specialist = None
+
+            if specialist is not None:
+                await emit("status", {"phase": "specialist", "text": f"Running {agent_choice}…"})
+                try:
+                    specialist_messages = await stream_agent_run(
+                        specialist, messages, phase="specialist",
+                        emit=emit, request=request, cancel_scope=cancel_scope,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                trace_steps.extend(build_agent_steps(specialist_messages))
+                final_raw = getattr(specialist_messages[-1], "content", "") if specialist_messages else ""
+        else:
+            final_raw = getattr(router_messages[-1], "content", "") if router_messages else ""
+
+        parsed = parse_agent_payload(final_raw)
+        return {
+            "final_response": QueryResponse(
+                answer=parsed.answer,
+                agent=agent_choice,
+                image=parsed.image,
+                dashboard=parsed.dashboard,
+                thinking=parsed.thinking,
+                steps=trace_steps,
+                source_id=active_source["source_id"] if active_source else "default",
+                source_name=active_source["name"] if active_source else "Default Database",
+            ).model_dump(mode="json")
+        }
+
+    # BI agent: run data phase
+    tables = active_source.get("tables", []) if active_source else []
+    if active_db and not tables:
+        tables = list(active_db.get_usable_table_names())
+
+    data_result = await run_bi_data_phase(
+        user_query=query.question,
+        db=active_db,
+        tables=tables,
+        model_id=query.model_id,
+        emit=emit,
+        request=request,
+        cancel_scope=cancel_scope,
+    )
+
+    # Merge router trace steps into the data phase steps
+    router_steps_raw = [s.model_dump() for s in trace_steps]
+    data_result["all_steps"] = router_steps_raw + data_result["all_steps"]
+    data_result["source_id"] = active_source["source_id"] if active_source else "default"
+    data_result["source_name"] = active_source["name"] if active_source else "Default Database"
+
+    # If single-chart path was taken, it's already complete
+    if data_result.get("is_single_chart") and data_result.get("single_chart_response"):
+        resp = data_result["single_chart_response"]
+        resp["steps"] = data_result["all_steps"]
+        resp["source_id"] = data_result["source_id"]
+        resp["source_name"] = data_result["source_name"]
+        return {"final_response": resp}
+
+    return {"data_phase_result": data_result}
+
+
+async def run_query_stream_assembly_phase(
+    data_phase_result: dict,
+    *,
+    model_id: Optional[str] = None,
+    emit: Optional[EmitFn] = None,
+    cancel_scope: Optional[QueryCancelScope] = None,
+) -> QueryResponse:
+    """Checkpoint Phase 2: Dashboard Assembly.
+
+    Takes the data_phase_result dict and runs the assembly phase.
+    """
+    result = await run_bi_assembly_phase(
+        user_query=data_phase_result["user_query"],
+        executed_queries_raw=data_phase_result["executed_queries"],
+        questions_output_raw=data_phase_result["questions_output"],
+        all_steps_raw=data_phase_result["all_steps"],
+        model_id=model_id,
+        emit=emit,
+        cancel_scope=cancel_scope,
+    )
+    result.source_id = data_phase_result.get("source_id", "default")
+    result.source_name = data_phase_result.get("source_name", "Default Database")
+    return result

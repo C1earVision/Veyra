@@ -28,6 +28,81 @@ export async function streamAgentQuery(baseUrl, payload, { signal, headers = {},
     throw new Error(detail || "Stream request failed");
   }
 
+  await _consumeSSE(res, onEvent, signal);
+}
+
+
+/**
+ * Checkpoint Phase 1: POST /query/stream/data
+ * Streams SSE events then returns via onEvent either:
+ * - 'done' with { final_response } (non-BI agent or single-chart)
+ * - 'data_phase_done' with { data_phase_result } (needs assembly next)
+ */
+export async function streamDataPhase(baseUrl, payload, { signal, headers = {}, onEvent }) {
+  const url = `${baseUrl.replace(/\/$/, "")}/query/stream/data`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      ...headers,
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errJson = await res.json();
+      detail = errJson.error || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail || "Data phase stream request failed");
+  }
+
+  await _consumeSSE(res, onEvent, signal);
+}
+
+
+/**
+ * Checkpoint Phase 2: POST /query/stream/assemble
+ * Sends the data_phase_result back and streams SSE assembly events,
+ * finishing with 'done' containing the final DashboardSpec.
+ */
+export async function streamAssemblyPhase(baseUrl, assemblyPayload, { signal, headers = {}, onEvent }) {
+  const url = `${baseUrl.replace(/\/$/, "")}/query/stream/assemble`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      ...headers,
+    },
+    body: JSON.stringify(assemblyPayload),
+    signal,
+  });
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errJson = await res.json();
+      detail = errJson.error || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail || "Assembly phase stream request failed");
+  }
+
+  await _consumeSSE(res, onEvent, signal);
+}
+
+
+/**
+ * Internal: consume an SSE ReadableStream, dispatch parsed events via onEvent.
+ */
+async function _consumeSSE(res, onEvent, signal) {
   const reader = res.body?.getReader();
   if (!reader) {
     throw new Error("Streaming not supported in this browser");
