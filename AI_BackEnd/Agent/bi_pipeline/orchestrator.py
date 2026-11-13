@@ -29,8 +29,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from Agent.bi_pipeline.schema_context import build_schema_context
 from Prompt.bi_pipeline.question_planner_prompt import QUESTION_PLANNER_PROMPT
 from Prompt.bi_pipeline.sql_engineer_prompt import SQL_ENGINEER_PROMPT
-from Prompt.bi_pipeline.dashboard_assembler_prompt import DASHBOARD_ASSEMBLER_PROMPT
-from Prompt.bi_pipeline.single_chart_prompt import SINGLE_CHART_PROMPT
+from Prompt.bi_pipeline.dashboard_assembler_prompt import (
+    DASHBOARD_ASSEMBLER_PROMPT,
+    get_dashboard_assembler_prompt,
+)
+from Prompt.bi_pipeline.single_chart_prompt import (
+    SINGLE_CHART_PROMPT,
+    get_single_chart_prompt,
+)
 from schemas.bi_pipeline_models import (
     AnalyticalIntent,
     BusinessQuestion,
@@ -885,12 +891,13 @@ async def _run_single_chart_pipeline(
     cancel_scope: Optional[QueryCancelScope] = None,
     all_steps: Optional[List[AgentStep]] = None,
     pipeline_start: Optional[float] = None,
+    lang: str = "en",
 ) -> QueryResponse:
     """Dedicated agent path: one SQL query → one chart or table (optional slider)."""
     steps = all_steps if all_steps is not None else []
     t0 = pipeline_start if pipeline_start is not None else time.time()
 
-    print(f"\n[BI Pipeline] ── SINGLE CHART / TABLE BRANCH ──")
+    print(f"\n[BI Pipeline] ── SINGLE CHART / TABLE BRANCH (lang={lang}) ──")
     if emit:
         await emit("status", {
             "phase": "single_chart_agent",
@@ -898,7 +905,7 @@ async def _run_single_chart_pipeline(
         })
 
     strong_llm = _get_strong_model(model_id)
-    agent_prompt = SINGLE_CHART_PROMPT.format(
+    agent_prompt = get_single_chart_prompt(lang).format(
         schema_context=schema_context,
         user_query=user_query,
     )
@@ -1108,6 +1115,7 @@ def _build_fallback_dashboard_output(
     user_query: str,
     valid_results: List[ExecutedQuery],
     questions_output: BusinessQuestionsOutput,
+    lang: str = "en",
 ) -> FinalDashboardOutput:
     """Fallback generator when Agent 3 LLM fails (e.g. rate limit exhausted).
     Builds a complete, valid FinalDashboardOutput directly from the executed query data.
@@ -1251,34 +1259,55 @@ def _build_fallback_dashboard_output(
     page_charts = charts[:1] if single_mode else charts[:4]
     page_kpis = [] if single_mode else kpis[:4]
 
+    if lang == "ar":
+        page_name = "نظرة عامة تنفيذية" if not single_mode else (page_charts[0].title[:48] if page_charts else "التحليل")
+        page_summary = f"نظرة عامة على التحليل لـ: {user_query}"
+        takeaways = [
+            f"- تم بنجاح تنفيذ {len(valid_results)} استعلام SQL مطابق لطلبك.",
+        ]
+        for eq in valid_results[:3]:
+            takeaways.append(f"- {eq.question}: تم استرجاع {eq.row_count} سجل.")
+        content = (
+            "### أهم النقاط\n"
+            + "\n".join(takeaways)
+            + "\n\n### التوصيات\n"
+            "- راجع الرسوم البيانية وبطاقات الأداء للاطلاع على المؤشرات الرئيسية.\n"
+            "- تابع باستعلامات أكثر تفصيلاً حول اتجاهات أو قطاعات محددة."
+        )
+        dashboard_title = "لوحة تحكم ذكاء الأعمال"
+        dashboard_subtitle = f"تحليل آلي لـ: {user_query}"
+    else:
+        page_name = "Executive Overview" if not single_mode else (page_charts[0].title[:48] if page_charts else "Analysis")
+        page_summary = f"Analysis overview for: {user_query}"
+        takeaways = [
+            f"- Successfully executed {len(valid_results)} SQL queries matching your request.",
+        ]
+        for eq in valid_results[:3]:
+            takeaways.append(f"- {eq.question}: {eq.row_count} records retrieved.")
+        content = (
+            "### Key Takeaways\n"
+            + "\n".join(takeaways)
+            + "\n\n### Recommendations\n"
+            "- Examine the charts and KPI scorecards for key performance indicators.\n"
+            "- Follow up with more targeted queries on specific trends or segments."
+        )
+        dashboard_title = "Business Intelligence Dashboard"
+        dashboard_subtitle = f"Automated analysis for: {user_query}"
+
     pages.append(DashboardPageSpec(
         id="overview" if not single_mode else "single_view",
-        name="Executive Overview" if not single_mode else (page_charts[0].title[:48] if page_charts else "Analysis"),
+        name=page_name,
         icon="overview" if not single_mode else "analytics",
-        summary=f"Analysis overview for: {user_query}",
+        summary=page_summary,
         insights=[] if single_mode else insights,
         kpis=page_kpis,
         charts=page_charts,
         sliders=fallback_sliders if fallback_sliders and not single_mode else None,
     ))
 
-    takeaways = [
-        f"- Successfully executed {len(valid_results)} SQL queries matching your request.",
-    ]
-    for eq in valid_results[:3]:
-        takeaways.append(f"- {eq.question}: {eq.row_count} records retrieved.")
-
-    content = (
-        "### Key Takeaways\n"
-        + "\n".join(takeaways)
-        + "\n\n### Recommendations\n"
-        "- Examine the charts and KPI scorecards for key performance indicators.\n"
-        "- Follow up with more targeted queries on specific trends or segments."
-    )
-
     return FinalDashboardOutput(
-        dashboard_title="Business Intelligence Dashboard",
-        dashboard_subtitle=f"Automated analysis for: {user_query}",
+        dashboard_title=dashboard_title,
+        dashboard_subtitle=dashboard_subtitle,
         content=content,
         pages=pages,
     )
@@ -1295,6 +1324,7 @@ async def run_bi_pipeline(
     emit: Optional[EmitFn] = None,
     request=None,
     cancel_scope: Optional[QueryCancelScope] = None,
+    lang: str = "en",
 ) -> QueryResponse:
     """Run the full 3-agent BI analysis pipeline with streaming.
 
@@ -1427,6 +1457,7 @@ async def run_bi_pipeline(
             cancel_scope=cancel_scope,
             all_steps=all_steps,
             pipeline_start=pipeline_start,
+            lang=lang,
         )
         # Hydrate the single chart result before returning
         if response.dashboard:
@@ -1566,7 +1597,7 @@ async def run_bi_pipeline(
     truncated_data = _truncate_query_data(valid_results)
     executed_queries_json = json.dumps(truncated_data, indent=2, default=str)
 
-    assembler_prompt = DASHBOARD_ASSEMBLER_PROMPT.format(
+    assembler_prompt = get_dashboard_assembler_prompt(lang).format(
         user_query=user_query,
         executed_queries_json=executed_queries_json,
     )
@@ -1600,7 +1631,7 @@ async def run_bi_pipeline(
                 "phase": "dashboard_assembler",
                 "text": "Assembling dashboard layout from query results…",
             })
-        dashboard_output = _build_fallback_dashboard_output(user_query, valid_results, questions_output)
+        dashboard_output = _build_fallback_dashboard_output(user_query, valid_results, questions_output, lang=lang)
         print(
             f"[BI Pipeline] Fallback dashboard assembler completed ({time.time() - agent3_start:.1f}s): "
             f"{len(dashboard_output.pages)} page(s) generated"
@@ -1655,6 +1686,7 @@ async def run_bi_data_phase(
     emit: Optional[EmitFn] = None,
     request=None,
     cancel_scope: Optional[QueryCancelScope] = None,
+    lang: str = "en",
 ) -> Dict[str, Any]:
     """Phase 1 of the checkpoint strategy: Schema → Questions → SQL → Execution.
 
@@ -1788,6 +1820,7 @@ async def run_bi_data_phase(
             cancel_scope=cancel_scope,
             all_steps=all_steps,
             pipeline_start=pipeline_start,
+            lang=lang,
         )
         print(f"[BI Pipeline] === DATA PHASE COMPLETE (single chart path) ===")
         return {
@@ -1910,6 +1943,7 @@ async def run_bi_data_phase(
         "all_steps": [s.model_dump() for s in all_steps],
         "questions_output": questions_output.model_dump(),
         "user_query": user_query,
+        "lang": lang,
     }
 
 
@@ -1922,6 +1956,7 @@ async def run_bi_assembly_phase(
     model_id: Optional[str] = None,
     emit: Optional[EmitFn] = None,
     cancel_scope: Optional[QueryCancelScope] = None,
+    lang: str = "en",
 ) -> QueryResponse:
     """Phase 2 of the checkpoint strategy: Dashboard Assembly + Hydration.
 
@@ -1977,7 +2012,7 @@ async def run_bi_assembly_phase(
     truncated_data = _truncate_query_data(valid_results)
     executed_queries_json = json.dumps(truncated_data, indent=2, default=str)
 
-    assembler_prompt = DASHBOARD_ASSEMBLER_PROMPT.format(
+    assembler_prompt = get_dashboard_assembler_prompt(lang).format(
         user_query=user_query,
         executed_queries_json=executed_queries_json,
     )
@@ -2011,7 +2046,7 @@ async def run_bi_assembly_phase(
                 "phase": "dashboard_assembler",
                 "text": "Assembling dashboard layout from query results…",
             })
-        dashboard_output = _build_fallback_dashboard_output(user_query, valid_results, questions_output)
+        dashboard_output = _build_fallback_dashboard_output(user_query, valid_results, questions_output, lang=lang)
         print(
             f"[BI Pipeline] Fallback dashboard assembler completed ({time.time() - agent3_start:.1f}s): "
             f"{len(dashboard_output.pages)} page(s) generated"

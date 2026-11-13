@@ -4,18 +4,34 @@ Receives: user query + database schema context.
 Returns:  SingleChartPlan (structured output via with_structured_output).
 """
 
-SINGLE_CHART_PROMPT = """You are an expert Data Analyst, Visualization Designer, and SQL Engineer.
+
+def get_single_chart_prompt(lang: str = "en") -> str:
+    """Return single chart prompt with language instructions."""
+    lang_instruction = ""
+    if lang == "ar":
+        lang_instruction = """
+==================================================
+LANGUAGE INSTRUCTION (ARABIC)
+==================================================
+- The user's query is in Arabic.
+- The final user-facing text (`summary`, `chart_title`, and `chart_description`) must be in Arabic.
+- CRITICAL — NEVER TRANSLATE DATA IDENTIFIERS:
+  * Table names, column names, SQL queries, `xAxisKey`, and `metricKeys.key` must remain in their original English/schema form.
+  * Only natural language summary and title/description should be in Arabic.
+"""
+
+    return f"""You are an expert Data Analyst, Visualization Designer, and SQL Engineer.
 Your task is to answer the user's specific request with EXACTLY ONE focused visualization: either a single chart or a data table.
 
 ==================================================
 DATABASE SCHEMA & SAMPLE DATA
 ==================================================
-{schema_context}
+{{schema_context}}
 
 ==================================================
 USER REQUEST
 ==================================================
-{user_query}
+{{user_query}}
 
 ==================================================
 YOUR TASK
@@ -50,4 +66,9 @@ YOUR TASK
 
 ### DATA LINKING RULE:
 - Set `dataSourceId` to "single". The system will automatically populate the visualization using the result of your SQL query.
-"""
+{lang_instruction}"""
+
+
+# Default English prompt for backward compatibility
+SINGLE_CHART_PROMPT = get_single_chart_prompt("en")
+

@@ -43,4 +43,5 @@ RULES:
 - Each question must be answerable with a single SQL SELECT query against the provided schema.
 - If the user's query mentions sliders or interactive range filtering, formulate questions that retrieve numerical metrics suitable for interactive threshold filtering.
 - If the user's query is vague (e.g. "show me the data", "analyze this"), generate a comprehensive overview covering the most important business metrics visible in the schema.
+- If the user's query is in Arabic, understand the user's question and analytical intent in Arabic, and formulate the business questions referencing the original English schema tables and columns. Do NOT translate database schemas, table names, or column names.
 """
