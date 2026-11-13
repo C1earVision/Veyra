@@ -815,15 +815,82 @@ def _normalize_single_chart_content(summary: str) -> str:
             "### Recommendations\n"
             "- Adjust filters or ask a follow-up for more detail."
         )
-    if "### Key Takeaways" not in text:
-        text = "### Key Takeaways\n" + text
     return text
+
+
+async def _synthesize_single_chart_answer(
+    user_query: str,
+    plan: SingleChartPlan,
+    executed: ExecutedQuery,
+    *,
+    model_id: Optional[str] = None,
+    lang: str = "en",
+    emit: Optional[EmitFn] = None,
+    cancel_scope: Optional[QueryCancelScope] = None,
+) -> str:
+    """Synthesize a direct, grounded answer to the user's question using the executed query data."""
+    if not executed.data:
+        return _normalize_single_chart_content(plan.summary)
+
+    sample_data = executed.data[:25]
+    data_str = json.dumps(sample_data, default=str, ensure_ascii=False)
+
+    lang_instruction = ""
+    if lang == "ar":
+        lang_instruction = (
+            "\n\nLANGUAGE INSTRUCTION (ARABIC):\n"
+            "- The user's query is in Arabic.\n"
+            "- You MUST write your ENTIRE response (direct answer, key takeaways, recommendations) in Arabic.\n"
+            "- State all metrics, comparisons, differences, and percentages clearly in natural Arabic."
+        )
+
+    synthesis_prompt = (
+        "You are an expert Data Analyst & Business Intelligence Advisor.\n"
+        "The user asked a specific question and you have executed an SQL query to retrieve real database records.\n"
+        "Your task is to provide an explicit, clear, data-backed answer that directly answers their question.\n\n"
+        f"USER QUESTION:\n{user_query}\n\n"
+        f"VISUALIZATION TITLE:\n{plan.title}\n\n"
+        f"QUERY EXECUTED:\n{plan.sql}\n\n"
+        f"EXECUTED DATA RESULTS ({executed.row_count} total rows):\n{data_str}\n\n"
+        "RESPONSE STRUCTURE:\n"
+        "1. Direct Answer (MANDATORY & AT THE VERY TOP):\n"
+        "   - Start immediately with a clear, direct answer to the user's question.\n"
+        "   - Quote exact figures, calculations, differences, or percentage changes from the data (e.g. comparing two periods, top items, totals).\n"
+        "   - Never say 'the chart shows' or make vague statements. Answer what they asked directly with the exact numbers.\n\n"
+        "2. ### Key Takeaways\n"
+        "   - 2 to 3 concise bullet points highlighting critical context or secondary findings from the data.\n\n"
+        "3. ### Recommendations\n"
+        "   - 1 to 2 actionable strategic suggestions based on the findings.\n\n"
+        "RULES:\n"
+        "- Base every figure strictly on the provided EXECUTED DATA RESULTS. Never simulate or invent data.\n"
+        "- Do NOT describe the visual UI layout (axes, colors, sliders, widgets). The user sees the visual.\n"
+        f"{lang_instruction}"
+    )
+
+    try:
+        local_llm = _get_local_model(model_id)
+        if cancel_scope and cancel_scope.is_cancelled():
+            raise asyncio.CancelledError()
+
+        response = await local_llm.ainvoke([HumanMessage(content=synthesis_prompt)])
+        content = response.content if hasattr(response, "content") else str(response)
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        clean_text = str(content).strip()
+        return clean_text if clean_text else _normalize_single_chart_content(plan.summary)
+    except Exception as e:
+        print(f"[BI Pipeline] Single chart answer synthesis failed ({e}), using fallback")
+        return _normalize_single_chart_content(plan.summary)
 
 
 def _plan_to_final_dashboard(
     user_query: str,
     plan: SingleChartPlan,
     executed: ExecutedQuery,
+    synthesized_content: Optional[str] = None,
 ) -> FinalDashboardOutput:
     """Build a minimal one-page dashboard from a SingleChartPlan and query results."""
     max_rows = MAX_SINGLE_TABLE_ROWS if plan.chart_type == "table" else MAX_SINGLE_CHART_ROWS
@@ -881,10 +948,12 @@ def _plan_to_final_dashboard(
         sliders=page_sliders or None,
     )
 
+    final_content = synthesized_content if synthesized_content else _normalize_single_chart_content(plan.summary)
+
     return FinalDashboardOutput(
         dashboard_title=plan.title,
         dashboard_subtitle=plan.description or user_query[:160],
-        content=_normalize_single_chart_content(plan.summary),
+        content=final_content,
         pages=[page],
     )
 
@@ -1002,10 +1071,22 @@ async def _run_single_chart_pipeline(
     if emit:
         await emit("status", {
             "phase": "single_chart_assembly",
-            "text": "Assembling visualization…",
+            "text": "Analyzing data and answering your question…",
         })
 
-    dashboard_output = _plan_to_final_dashboard(user_query, plan, executed)
+    synthesized_content = await _synthesize_single_chart_answer(
+        user_query=user_query,
+        plan=plan,
+        executed=executed,
+        model_id=model_id,
+        lang=lang,
+        emit=emit,
+        cancel_scope=cancel_scope,
+    )
+
+    dashboard_output = _plan_to_final_dashboard(
+        user_query, plan, executed, synthesized_content=synthesized_content
+    )
     dashboard_spec = _to_dashboard_spec(dashboard_output)
 
     total_time = time.time() - t0

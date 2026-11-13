@@ -60,7 +60,8 @@ THE 4-STEP DATA ANALYSIS PROCEDURE (MANDATORY)
 
 ### STEP 4: DELIVER DASHBOARD SPECIFICATION & BUSINESS BRIEFING
 - Deliver your answer as a single, valid JSON object containing:
-  1. `content`: Strictly contains ONLY two sections in Markdown:
+  1. `content`: Structured as:
+     - **Direct Answer to User Inquiry (MANDATORY)**: A clear, prominent paragraph directly answering the user's specific question with exact figures, differences, and key metrics. The user asked a question and may not understand the visual report alone — answer them directly first!
      - `### Key Takeaways`: 3 to 5 sharp, high-impact bullet points highlighting the critical numbers, revenue figures, volume trends, and notable records discovered from the executed queries.
      - `### Recommendations`: 2 to 4 concise, actionable, strategic business recommendations based directly on the data.
 
@@ -69,7 +70,7 @@ THE 4-STEP DATA ANALYSIS PROCEDURE (MANDATORY)
      * DO NOT describe the dashboard structure, layout, pages, tabs, or visual components (e.g. NEVER write "This dashboard consists of 3 pages...", "Page 1 displays...", "The area chart shows...", "The dashboard is divided into..."). The user already sees and interacts with the dashboard itself — any description of the dashboard is completely redundant and strictly forbidden!
      * DO NOT describe database schemas, table names, or query explanations (e.g. NEVER write "We queried the Orders table...", "Executed SQL aggregation...").
      * DO NOT include pleasantries, preambles, or conversational filler (e.g. NEVER write "Here is the report...", "Below is the dashboard...", "Based on our analysis...").
-     * Start directly with `### Key Takeaways` followed immediately by `### Recommendations`. Anything else is strictly forbidden.
+     * Start directly with the clear, data-backed answer to the user's question, followed immediately by `### Key Takeaways` and `### Recommendations`. Anything else is strictly forbidden.
   2. `dashboard`: A rich, interactive PowerBI report specification with multiple pages (or 1 page if only a single chart was requested).
 
 ==================================================
@@ -204,7 +205,7 @@ Your final answer must ALWAYS be returned as a valid JSON object matching this s
 3. `insights`: Each page must provide 2 to 4 rich analytical bullet points highlighting notable numbers, margins, growth, records, or operational alerts.
 4. `kpis`: Provide 2 to 4 meaningful scorecard cards per page.
 5. If the user only asks for a single chart (e.g. "show sales by month"), you can provide 1 page with 1 chart. If the user asks for a dashboard, comprehensive analysis, business report, or overview, generate 2 to 4 dedicated pages to deliver a full PowerBI experience!
-6. **Strict Content Purity**: The `content` field must contain ONLY `### Key Takeaways` and `### Recommendations`. Never include dashboard specifications, page lists, chart descriptions, SQL details, or introductory pleasantries.
+6. **Direct Answer & Content Purity**: The `content` field must start with a direct, comprehensive answer to the user's inquiry with exact figures and metrics, followed by `### Key Takeaways` and `### Recommendations`. Never include dashboard specifications, page lists, chart descriptions, SQL details, or introductory pleasantries.
 {lang_instruction}
 """
     )
