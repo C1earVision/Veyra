@@ -40,6 +40,7 @@ import DataSourceModal from "../components/DataSourceModal";
 import DataExplorer from "../components/DataExplorer";
 import AgentThinking from "../components/AgentThinking";
 import RecentChatsView from "../components/RecentChatsView";
+import AppLoadingScreen from "../components/AppLoadingScreen";
 import {
   getRecentChats,
   saveChatSession,
@@ -643,6 +644,11 @@ export default function App() {
 
   const [activeSource, setActiveSource] = useState(() => getSavedActiveSource());
 
+  // Application initialization loading state
+  const [isAppLoading, setIsAppLoading] = useState(true);
+  const [modelsStatus, setModelsStatus] = useState("loading"); // "loading" | "ready" | "error"
+  const [sourcesStatus, setSourcesStatus] = useState("loading"); // "loading" | "ready" | "error"
+
   // Model selection state
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState(() => {
@@ -674,29 +680,6 @@ export default function App() {
       localStorage.setItem("messages", JSON.stringify(["Context: "]));
     }
     localStorage.setItem("admin", JSON.stringify(false));
-  }, []);
-
-  // Fetch available models on mount
-  useEffect(() => {
-    const fetchModels = async () => {
-      try {
-        const res = await axios.get(`${AI_API_URL}/models`, {
-          headers: authHeaders(),
-        });
-        if (res.data?.models) {
-          setAvailableModels(res.data.models);
-          // If no model is selected yet, default to the first one (Ollama local)
-          if (!selectedModel && res.data.models.length > 0) {
-            const defaultId = res.data.models[0].id;
-            setSelectedModel(defaultId);
-            localStorage.setItem("selectedModel", defaultId);
-          }
-        }
-      } catch (err) {
-        console.error("Failed to fetch available models:", err);
-      }
-    };
-    fetchModels();
   }, []);
 
   // Close model dropdown on outside click
@@ -743,6 +726,82 @@ export default function App() {
     }
   };
 
+  // Orchestrated startup: fetch models and active sources before application starts
+  const bootstrapApplication = async () => {
+    setIsAppLoading(true);
+    setModelsStatus("loading");
+    setSourcesStatus("loading");
+
+    // Task 1: Fetch available AI models
+    const modelsTask = (async () => {
+      try {
+        const res = await axios.get(`${AI_API_URL}/models`, {
+          headers: authHeaders(),
+        });
+        if (res.data?.models) {
+          setAvailableModels(res.data.models);
+          if (!selectedModel && res.data.models.length > 0) {
+            const defaultId = res.data.models[0].id;
+            setSelectedModel(defaultId);
+            localStorage.setItem("selectedModel", defaultId);
+          }
+        }
+        setModelsStatus("ready");
+        return res.data?.models || [];
+      } catch (err) {
+        console.error("Failed to fetch available models:", err);
+        setModelsStatus("error");
+        return [];
+      }
+    })();
+
+    // Task 2: Synchronize active data source with server
+    const sourcesTask = (async () => {
+      try {
+        const savedSource = getSavedActiveSource();
+        const res = await syncActiveSourceWithServer(savedSource);
+        setSourcesStatus("ready");
+        return res;
+      } catch (err) {
+        console.error("Failed to sync active source with server:", err);
+        setSourcesStatus("error");
+        return null;
+      }
+    })();
+
+    // Task 3: Sync recent chats
+    const chatsTask = (async () => {
+      try {
+        const chats = await fetchUserRecentChats();
+        if (Array.isArray(chats) && chats.length > 0) {
+          setRecentChats(chats);
+          const activeState = getSavedActiveSession();
+          if ((!activeState.messages || activeState.messages.length === 0) && !currentChatIdRef.current) {
+            const latest = chats[0];
+            setCurrentChatId(latest.id);
+            currentChatIdRef.current = latest.id;
+            setMessages(latest.messages || []);
+            if (latest.contextMessages) {
+              localStorage.setItem("messages", JSON.stringify(latest.contextMessages));
+            }
+            if (latest.source) {
+              handleSelectSource(latest.source);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to sync recent chats:", err);
+      }
+    })();
+
+    await Promise.allSettled([modelsTask, sourcesTask, chatsTask]);
+
+    // Smooth transition buffer so completed state is visible before transition
+    setTimeout(() => {
+      setIsAppLoading(false);
+    }, 400);
+  };
+
   useEffect(() => {
     // If active messages are empty, but user has recent chats, restore latest chat session
     const activeState = getSavedActiveSession();
@@ -767,28 +826,7 @@ export default function App() {
       }
     }
 
-    const savedSource = getSavedActiveSource();
-    syncActiveSourceWithServer(savedSource);
-
-    fetchUserRecentChats().then((chats) => {
-      if (Array.isArray(chats) && chats.length > 0) {
-        setRecentChats(chats);
-        // If current device session is empty, restore the latest chat session from server
-        const activeState = getSavedActiveSession();
-        if ((!activeState.messages || activeState.messages.length === 0) && !currentChatIdRef.current) {
-          const latest = chats[0];
-          setCurrentChatId(latest.id);
-          currentChatIdRef.current = latest.id;
-          setMessages(latest.messages || []);
-          if (latest.contextMessages) {
-            localStorage.setItem("messages", JSON.stringify(latest.contextMessages));
-          }
-          if (latest.source) {
-            handleSelectSource(latest.source);
-          }
-        }
-      }
-    });
+    bootstrapApplication();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1388,6 +1426,19 @@ export default function App() {
     setActiveSource(DEFAULT_SOURCE);
     navigate("/");
   };
+
+  if (isAppLoading) {
+    return (
+      <AppLoadingScreen
+        modelsStatus={modelsStatus}
+        sourcesStatus={sourcesStatus}
+        modelsCount={availableModels.length}
+        activeSource={activeSource}
+        onRetry={bootstrapApplication}
+        onContinue={() => setIsAppLoading(false)}
+      />
+    );
+  }
 
   return (
     <div className="flex h-screen bg-[#0F1117] text-[#F3F4F6] overflow-hidden">
