@@ -14,10 +14,10 @@ from Agent.AgenticWorkFlow import (
 )
 from Agent.bi_pipeline.orchestrator import run_bi_pipeline, run_bi_data_phase, run_bi_assembly_phase
 from Prompt.generalSysPrompt import GENERAL_SYSTEM_PROMPT
-from Prompt.SearchSysPrompt import SEARCH_SYSTEM_PROMPT
-from Prompt.RagSysPropmt import RAG_SYSTEM_PROMPT
-from Prompt.dashboardSysPrompt import DASHBOARD_SYSTEM_PROMPT
-from Prompt.analysisAgent import ANALYSIS_AGENT_SYSTEM_PROMPT
+from Prompt.SearchSysPrompt import SEARCH_SYSTEM_PROMPT, get_search_system_prompt
+from Prompt.RagSysPropmt import RAG_SYSTEM_PROMPT, get_rag_system_prompt
+from Prompt.dashboardSysPrompt import DASHBOARD_SYSTEM_PROMPT, get_dashboard_system_prompt
+from Prompt.analysisAgent import ANALYSIS_AGENT_SYSTEM_PROMPT, get_analysis_agent_system_prompt
 from Utils.agent_trace import build_agent_steps, message_content_to_str
 from Utils.agent_stream import stream_agent_run
 from Utils.answer_parser import parse_agent_payload
@@ -40,6 +40,32 @@ def _normalize_agent_choice(raw: Any) -> str:
     return text.strip().strip("'").strip('"') if isinstance(text, str) else str(text)
 
 
+def _parse_router_output(raw: Any) -> tuple[str, str]:
+    """Parse the router agent's output into (agent_choice, language_code).
+
+    The router now returns two lines:
+      line 1: agent identifier (e.g. use_rag_agent)
+      line 2: language code ("ar" or "en")
+
+    Falls back to "en" if language detection is missing.
+    """
+    text = message_content_to_str(raw)
+    text = text.strip().strip("'").strip('"') if isinstance(text, str) else str(text)
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    agent_choice = lines[0] if lines else text
+    # Clean any surrounding quotes from agent choice
+    agent_choice = agent_choice.strip().strip("'").strip('"')
+
+    lang = "en"
+    if len(lines) >= 2:
+        detected = lines[1].strip().lower().strip("'").strip('"')
+        if detected in ("ar", "en"):
+            lang = detected
+
+    return agent_choice, lang
+
+
 def _resolve_router_model(model_id: Optional[str]) -> str | None:
     """Classifying requests is a lightweight task — use gemini-3.5-flash-lite if Gemini is available or selected."""
     gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -56,33 +82,33 @@ def _resolve_specialist_model(model_id: Optional[str]) -> str | None:
     return model_id
 
 
-def build_specialist_graph(agent_choice: str, query, active_db):
+def build_specialist_graph(agent_choice: str, query, active_db, lang: str = "en"):
     chosen_model = _resolve_specialist_model(query.model_id)
     provider = "gemini" if chosen_model and "gemini" in chosen_model.lower() else "groq"
     strong_provider = "gemini" if chosen_model and "gemini" in chosen_model.lower() else "openai"
 
     if agent_choice == "use_web_search_agent":
         return SearchAgent(
-            system_prompt=SEARCH_SYSTEM_PROMPT,
+            system_prompt=get_search_system_prompt(lang),
             model_provider=provider,
             model_id=chosen_model,
         )()
     if agent_choice == "use_rag_agent":
         return RagAgent(
-            system_prompt=RAG_SYSTEM_PROMPT,
+            system_prompt=get_rag_system_prompt(lang),
             model_provider=strong_provider,
             db=active_db,
             model_id=chosen_model,
         )()
     if agent_choice == "use_crud_agent":
         return CrudAgent(
-            system_prompt=DASHBOARD_SYSTEM_PROMPT,
+            system_prompt=get_dashboard_system_prompt(lang),
             model_provider=strong_provider,
             model_id=chosen_model,
         )()
     if agent_choice == "use_data_analysis_and_visualization_agent":
         return analysisAgent(
-            system_prompt=ANALYSIS_AGENT_SYSTEM_PROMPT,
+            system_prompt=get_analysis_agent_system_prompt(lang),
             model_provider=strong_provider,
             db=active_db,
             model_id=chosen_model,
@@ -114,7 +140,7 @@ async def run_query(
         messages, general_agent, request=request, cancel_scope=cancel_scope
     )
     trace_steps = build_agent_steps(router_run.messages)
-    agent_choice = _normalize_agent_choice(router_run.content)
+    agent_choice, lang = _parse_router_output(router_run.content)
 
     # Check: If the question requires querying a database, verify that a database is connected first
     if agent_choice in DATABASE_REQUIRED_AGENTS and not active_db:
@@ -132,13 +158,13 @@ async def run_query(
     if agent_choice == "use_web_search_agent":
         specialist_run = await use_agent_fn(
             messages,
-            build_specialist_graph(agent_choice, query, active_db),
+            build_specialist_graph(agent_choice, query, active_db, lang),
             request=request,
             cancel_scope=cancel_scope,
         )
     elif agent_choice == "use_rag_agent":
         try:
-            specialist = build_specialist_graph(agent_choice, query, active_db)
+            specialist = build_specialist_graph(agent_choice, query, active_db, lang)
             specialist_run = await use_agent_fn(
                 messages,
                 specialist,
@@ -152,7 +178,7 @@ async def run_query(
         if is_admin:
             specialist_run = await use_agent_fn(
                 messages,
-                build_specialist_graph(agent_choice, query, active_db),
+                build_specialist_graph(agent_choice, query, active_db, lang),
                 request=request,
                 cancel_scope=cancel_scope,
             )
@@ -171,6 +197,7 @@ async def run_query(
                 model_id=query.model_id,
                 request=request,
                 cancel_scope=cancel_scope,
+                lang=lang,
             )
             # Merge router steps with pipeline steps
             pipeline_result.steps = trace_steps + pipeline_result.steps
@@ -231,7 +258,7 @@ async def run_query_stream(
     except asyncio.CancelledError:
         raise
     trace_steps = build_agent_steps(router_messages)
-    agent_choice = _normalize_agent_choice(
+    agent_choice, lang = _parse_router_output(
         message_content_to_str(getattr(router_messages[-1], "content", ""))
         if router_messages
         else ""
@@ -268,6 +295,7 @@ async def run_query_stream(
             emit=emit,
             request=request,
             cancel_scope=cancel_scope,
+            lang=lang,
         )
         # Merge router steps with pipeline steps
         pipeline_result.steps = trace_steps + pipeline_result.steps
@@ -280,7 +308,7 @@ async def run_query_stream(
         "use_crud_agent",
     ):
         try:
-            specialist = build_specialist_graph(agent_choice, query, active_db)
+            specialist = build_specialist_graph(agent_choice, query, active_db, lang)
         except Exception as e:
             print(f"[pipeline stream] Failed to initialize {agent_choice}: {e}")
             final_raw = f"Unable to run {agent_choice}: {e}"
@@ -359,7 +387,7 @@ async def run_query_stream_data_phase(
     except asyncio.CancelledError:
         raise
     trace_steps = build_agent_steps(router_messages)
-    agent_choice = _normalize_agent_choice(
+    agent_choice, lang = _parse_router_output(
         message_content_to_str(getattr(router_messages[-1], "content", ""))
         if router_messages
         else ""
@@ -399,7 +427,7 @@ async def run_query_stream_data_phase(
 
         if agent_choice in ("use_web_search_agent", "use_rag_agent", "use_crud_agent"):
             try:
-                specialist = build_specialist_graph(agent_choice, query, active_db)
+                specialist = build_specialist_graph(agent_choice, query, active_db, lang)
             except Exception as e:
                 print(f"[pipeline stream] Failed to initialize {agent_choice}: {e}")
                 final_raw = f"Unable to run {agent_choice}: {e}"
@@ -446,6 +474,7 @@ async def run_query_stream_data_phase(
         emit=emit,
         request=request,
         cancel_scope=cancel_scope,
+        lang=lang,
     )
 
     # Merge router trace steps into the data phase steps
@@ -461,6 +490,9 @@ async def run_query_stream_data_phase(
         resp["source_id"] = data_result["source_id"]
         resp["source_name"] = data_result["source_name"]
         return {"final_response": resp}
+
+    # Pass language through to assembly phase
+    data_result["lang"] = lang
 
     return {"data_phase_result": data_result}
 
@@ -484,6 +516,7 @@ async def run_query_stream_assembly_phase(
         model_id=model_id,
         emit=emit,
         cancel_scope=cancel_scope,
+        lang=data_phase_result.get("lang", "en"),
     )
     result.source_id = data_phase_result.get("source_id", "default")
     result.source_name = data_phase_result.get("source_name", "Default Database")
