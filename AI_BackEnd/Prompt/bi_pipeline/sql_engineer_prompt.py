@@ -35,6 +35,11 @@ SQL RULES:
   * If a table has no name column, use a category/type/status/location column, or alias a readable label like:
     COALESCE(category_column, 'Item #' || SUBSTR(id_column, 1, 6)) AS item_name
     NEVER output bare 32-character hashes or UUIDs as chart categories!
+- CRITICAL RULE — ROBUST RELATIVE DATES & COMPARISONS:
+  * When answering questions about "this month vs last month", "recent trends", or relative time periods:
+    - NEVER use fragile date subqueries like `WHERE date >= (SELECT DATE_TRUNC('month', MAX(date)) - INTERVAL '1 month')` or `WHERE date >= CURRENT_DATE - INTERVAL ...`. In historical and real-world datasets, terminal months may have zero or only canceled records, causing subquery filters to return 0 rows.
+    - ALWAYS group by the period (e.g. `DATE_TRUNC('month', timestamp)`), apply your status filter (e.g. `order_status = 'delivered'`), and use `ORDER BY period DESC LIMIT N` (e.g. `LIMIT 2` for a month-over-month comparison, or `LIMIT 6`/`LIMIT 12` for recent trajectory).
+    - This guarantees you always retrieve the latest periods that actually contain data.
 - Use proper SQL aggregations: SUM, COUNT, AVG, ROUND, GROUP BY, ORDER BY, LIMIT.
 - Detect the SQL dialect from the schema (PostgreSQL, DuckDB, SQLite, MySQL) and write dialect-appropriate SQL.
 - For PostgreSQL: use ILIKE for case-insensitive matching, use ::date or DATE_TRUNC for date operations.

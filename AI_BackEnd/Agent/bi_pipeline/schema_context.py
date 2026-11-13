@@ -50,7 +50,7 @@ def build_schema_context(
             ddl = f"-- Could not retrieve schema for {tbl}"
         lines.append(ddl.strip())
 
-        # Get 1 sample row
+        # Get 1 sample row and inspect column metadata
         try:
             with db._engine.connect() as conn:
                 try:
@@ -68,6 +68,36 @@ def build_schema_context(
                     lines.append(f"-- Sample row: {sample}")
                 else:
                     lines.append(f"-- Table '{tbl}' is empty (no sample row)")
+
+                # Fetch temporal boundaries and low-cardinality values for key columns
+                date_cols = [
+                    c for c in cols
+                    if any(kw in c.lower() for kw in ("date", "timestamp", "time"))
+                ][:2]
+                for dc in date_cols:
+                    try:
+                        q_date = text(f'SELECT MIN("{dc}"), MAX("{dc}") FROM "{tbl}" WHERE "{dc}" IS NOT NULL')
+                        d_res = conn.execute(q_date).fetchone()
+                        if d_res and d_res[0] is not None:
+                            lines.append(f"-- Date range for '{dc}': {str(d_res[0])[:19]} to {str(d_res[1])[:19]}")
+                    except Exception:
+                        pass
+
+                status_cols = [
+                    c for c in cols
+                    if any(kw in c.lower() for kw in ("status", "type", "category"))
+                    and c not in date_cols
+                ][:2]
+                for sc in status_cols:
+                    try:
+                        q_status = text(f'SELECT DISTINCT "{sc}" FROM "{tbl}" WHERE "{sc}" IS NOT NULL LIMIT 8')
+                        s_rows = conn.execute(q_status).fetchall()
+                        if s_rows:
+                            vals = [str(r[0]) for r in s_rows if r[0] is not None]
+                            if vals:
+                                lines.append(f"-- Distinct values for '{sc}': {vals}")
+                    except Exception:
+                        pass
         except Exception:
             lines.append(f"-- Could not fetch sample data for {tbl}")
 

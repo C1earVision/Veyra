@@ -493,11 +493,19 @@ async def _retry_failed_queries(
 
     retry_questions_text = ""
     for fq in failed_queries:
+        if fq.error:
+            issue_str = f"Error: {fq.error}"
+        else:
+            issue_str = (
+                "Issue: The query executed without syntax errors, but returned 0 rows.\n"
+                "  Reason: The WHERE clause or date filter was too restrictive.\n"
+                "  Guidance: Do not use fragile date subqueries like MAX(date) - INTERVAL. Group by period and use ORDER BY period DESC LIMIT N instead. Or loosen status/category filters."
+            )
         retry_questions_text += (
             f"- Question ID: {fq.question_id}\n"
             f"  Question: {fq.question}\n"
-            f"  Previous SQL (FAILED): {fq.sql}\n"
-            f"  Error: {fq.error}\n\n"
+            f"  Previous SQL: {fq.sql}\n"
+            f"  {issue_str}\n\n"
         )
 
     retry_prompt = SQL_ENGINEER_PROMPT.format(
@@ -505,9 +513,9 @@ async def _retry_failed_queries(
         questions_json=retry_questions_text,
     )
     retry_prompt += (
-        "\n\nIMPORTANT: The previous SQL queries above FAILED with the errors shown. "
-        "Fix the SQL to avoid these errors. Pay close attention to column names, "
-        "table names, and SQL syntax for the target dialect."
+        "\n\nIMPORTANT: The previous SQL queries above either FAILED with syntax errors or RETURNED 0 ROWS. "
+        "Fix the SQL to avoid errors and ensure queries return real data. Pay close attention to column names, "
+        "table names, date ranges, and relaxing overly strict WHERE clauses (especially for date/status combinations)."
     )
 
     if emit:
@@ -938,18 +946,32 @@ async def _run_single_chart_pipeline(
 
     executed = _execute_sql_for_plan(db, plan)
 
-    if executed.error:
-        print(f"[BI Pipeline] Single chart SQL failed: {executed.error}")
+    if executed.error or executed.row_count == 0:
+        issue_label = "FAILED WITH ERROR" if executed.error else "RETURNED 0 ROWS"
+        issue_desc = (
+            f"ERROR:\n{executed.error}"
+            if executed.error
+            else (
+                "ZERO ROWS RETURNED:\n"
+                "The query executed without syntax errors, but produced 0 rows.\n"
+                "This usually happens when WHERE conditions or date filters are too restrictive.\n"
+                "- If comparing recent periods ('this month vs last month', 'latest sales', 'recent trajectory'), "
+                "DO NOT use fragile date subqueries like `WHERE date >= (SELECT DATE_TRUNC('month', MAX(date)) - INTERVAL '1 month')`.\n"
+                "- INSTEAD, group by the date period, filter valid statuses, and use `ORDER BY 1 DESC LIMIT N`.\n"
+                "- Check if combining multiple filters (e.g. status='delivered' AND date cutoff) eliminated all matching rows."
+            )
+        )
+        print(f"[BI Pipeline] Single chart SQL {issue_label.lower()}: {issue_desc}")
         retry_prompt = agent_prompt + (
-            f"\n\nPREVIOUS SQL FAILED:\n{plan.sql}\n\nERROR:\n{executed.error}\n\n"
-            "Return corrected SQL and the same visualization plan."
+            f"\n\nPREVIOUS SQL ATTEMPT ({issue_label}):\n{plan.sql}\n\n{issue_desc}\n\n"
+            "Return corrected SQL and the visualization plan that actually returns data."
         )
         try:
             plan = await _invoke_structured_agent(
                 llm=strong_llm,
                 output_schema=SingleChartPlan,
                 system_prompt=retry_prompt,
-                user_message="Fix the SQL and return the visualization plan.",
+                user_message="Fix the SQL so it returns matching data, and return the visualization plan.",
                 phase="single_chart_agent",
                 emit=emit,
                 cancel_scope=cancel_scope,
@@ -1534,18 +1556,18 @@ async def run_bi_pipeline(
         f"{sum(1 for eq in executed if not eq.error)}/{len(executed)} succeeded"
     )
 
-    # ── SQL Retry for failed queries (suggestion #1) ─────────────────────
-    failed = [eq for eq in executed if eq.error]
-    succeeded = [eq for eq in executed if not eq.error]
+    # ── SQL Retry for failed or empty queries ─────────────────────
+    failed = [eq for eq in executed if eq.error or eq.row_count == 0]
+    succeeded = [eq for eq in executed if not eq.error and eq.row_count > 0]
 
     if failed:
         print(
-            f"\n[BI Pipeline] ── STEP 3b: SQL Retry ({len(failed)} failed) ──"
+            f"\n[BI Pipeline] ── STEP 3b: SQL Retry ({len(failed)} failed or empty) ──"
         )
         if emit:
             await emit("status", {
                 "phase": "sql_retry",
-                "text": f"Retrying {len(failed)} failed queries…",
+                "text": f"Retrying {len(failed)} failed or empty queries…",
             })
 
         retried = await _retry_failed_queries(
@@ -1897,16 +1919,16 @@ async def run_bi_data_phase(
         f"{sum(1 for eq in executed if not eq.error)}/{len(executed)} succeeded"
     )
 
-    # ── SQL Retry for failed queries ──
-    failed = [eq for eq in executed if eq.error]
-    succeeded = [eq for eq in executed if not eq.error]
+    # ── SQL Retry for failed or empty queries ──
+    failed = [eq for eq in executed if eq.error or eq.row_count == 0]
+    succeeded = [eq for eq in executed if not eq.error and eq.row_count > 0]
 
     if failed:
-        print(f"\n[BI Pipeline] ── STEP 3b: SQL Retry ({len(failed)} failed) ──")
+        print(f"\n[BI Pipeline] ── STEP 3b: SQL Retry ({len(failed)} failed or empty) ──")
         if emit:
             await emit("status", {
                 "phase": "sql_retry",
-                "text": f"Retrying {len(failed)} failed queries…",
+                "text": f"Retrying {len(failed)} failed or empty queries…",
             })
 
         retried = await _retry_failed_queries(

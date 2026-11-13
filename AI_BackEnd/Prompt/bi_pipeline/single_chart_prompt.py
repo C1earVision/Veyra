@@ -50,6 +50,14 @@ YOUR TASK
    - Use proper aggregation: `SUM()`, `COUNT()`, `AVG()` with `GROUP BY` and `ORDER BY ... DESC LIMIT N` (default LIMIT 10-25 for readability).
    - Only use tables and columns that exist in the schema. Do NOT invent columns.
    - For map charts, group by state or city column (e.g. `customer_state`, `customer_city`, `state`, `city`). Coordinates are automatically resolved.
+   - CRITICAL RULE — ROBUST RELATIVE DATES & COMPARISONS:
+     * When the user asks for "this month vs last month", "recent sales", "latest trends", or period comparisons:
+       - NEVER use fragile date subqueries like `WHERE date >= (SELECT DATE_TRUNC('month', MAX(date)) - INTERVAL '1 month')` or `WHERE date >= CURRENT_DATE - INTERVAL ...`. In historical and real-world datasets, terminal months may have zero or only canceled records, causing subquery filters to return 0 rows.
+       - ALWAYS group by the period (e.g. `DATE_TRUNC('month', timestamp)`), apply your status filter (e.g. `order_status = 'delivered'`), and use `ORDER BY period DESC LIMIT N` (e.g. `LIMIT 2` for a month-over-month comparison, or `LIMIT 6`/`LIMIT 12` for recent trajectory).
+       - This guarantees you always retrieve the latest periods with actual matching data.
+   - SQL DIALECT COMPATIBILITY:
+     * `DATE_TRUNC('month', timestamp)` works across PostgreSQL and DuckDB.
+     * In DuckDB, use `strftime(timestamp, '%Y-%m')` for formatted month strings, NOT `TO_CHAR()`. In PostgreSQL, `TO_CHAR()` or `DATE_TRUNC()` can be used.
 
 4. Interactive Slider:
    - If the user asks for a slider, threshold, or range filtering (e.g. "with a slider for price", "add a slider for minimum orders"), OR if interactive thresholding on a continuous numeric metric (price, quantity, revenue, score) provides clear analytical value:
