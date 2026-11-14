@@ -1284,7 +1284,7 @@ function ChartCard({ chart, onExpand, expanded = false, animKey = "0", isExporti
       <div className="flex items-start justify-between mb-2.5 gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
-            <h4 className="text-[14px] font-semibold text-[#F8FAFC] tracking-tight leading-snug">
+            <h4 dir="auto" className="text-[14px] font-semibold text-[#F8FAFC] tracking-tight leading-snug text-start">
               {chart.title}
             </h4>
             {type === "table" && (
@@ -1302,7 +1302,7 @@ function ChartCard({ chart, onExpand, expanded = false, animKey = "0", isExporti
             )}
           </div>
           {chart.description && (
-            <p className="text-[12px] text-[#94A3B8] mt-1 leading-normal">
+            <p dir="auto" className="text-[12px] text-[#94A3B8] mt-1 leading-normal text-start">
               {chart.description}
             </p>
           )}
@@ -2315,7 +2315,7 @@ export default function InteractiveDashboard({ spec }) {
       {!fs && <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-4 border-b border-[#202734]">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2.5 flex-wrap">
-            <h3 className="text-[18px] sm:text-[19px] font-bold text-[#F8FAFC] tracking-tight leading-snug">
+            <h3 dir="auto" className="text-[18px] sm:text-[19px] font-bold text-[#F8FAFC] tracking-tight leading-snug text-start">
               {report.title}
             </h3>
             <span className="text-[9.5px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded bg-[#10B981]/10 text-[#34D399] border border-[#10B981]/25">
@@ -2323,7 +2323,7 @@ export default function InteractiveDashboard({ spec }) {
             </span>
           </div>
           {(page.summary || report.subtitle) && (
-            <p className="text-[12.5px] text-[#94A3B8] mt-1 leading-relaxed max-w-4xl">
+            <p dir="auto" className="text-[12.5px] text-[#94A3B8] mt-1 leading-relaxed max-w-4xl text-start">
               {page.summary || report.subtitle}
             </p>
           )}
@@ -2455,9 +2455,9 @@ export default function InteractiveDashboard({ spec }) {
           </div>
           <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1.5 text-[12px] text-[#E2E8F0]">
             {insights.map((insight, idx) => (
-              <li key={idx} className="flex items-start gap-2.5 leading-relaxed">
+              <li key={idx} dir="auto" className="flex items-start gap-2.5 leading-relaxed text-start">
                 <span className="mt-[7px] w-1.5 h-1.5 rounded-full bg-[#10B981] shrink-0" />
-                <span>{insight}</span>
+                <span dir="auto" className="text-start">{insight}</span>
               </li>
             ))}
           </ul>

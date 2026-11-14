@@ -113,30 +113,30 @@ function preprocessMarkdown(text) {
 const markdownComponents = {
   /* --- Block elements --- */
   p: ({ children }) => (
-    <p className="mb-2.5 last:mb-0 leading-relaxed text-[#D1D5DB]">{children}</p>
+    <p dir="auto" className="mb-2.5 last:mb-0 leading-relaxed text-[#D1D5DB] text-start">{children}</p>
   ),
   h1: ({ children }) => (
-    <h1 className="text-[17px] font-semibold text-[#F3F4F6] mt-4 mb-2 first:mt-0 tracking-tight">{children}</h1>
+    <h1 dir="auto" className="text-[17px] font-semibold text-[#F3F4F6] mt-4 mb-2 first:mt-0 tracking-tight text-start">{children}</h1>
   ),
   h2: ({ children }) => (
-    <h2 className="text-[15px] font-semibold text-[#F3F4F6] mt-3.5 mb-1.5 first:mt-0 tracking-tight">{children}</h2>
+    <h2 dir="auto" className="text-[15px] font-semibold text-[#F3F4F6] mt-3.5 mb-1.5 first:mt-0 tracking-tight text-start">{children}</h2>
   ),
   h3: ({ children }) => (
-    <h3 className="text-[14px] font-semibold text-[#F3F4F6] mt-3 mb-1.5 first:mt-0">{children}</h3>
+    <h3 dir="auto" className="text-[14px] font-semibold text-[#F3F4F6] mt-3 mb-1.5 first:mt-0 text-start">{children}</h3>
   ),
   h4: ({ children }) => (
-    <h4 className="text-[13.5px] font-medium text-[#F3F4F6] mt-2.5 mb-1 first:mt-0">{children}</h4>
+    <h4 dir="auto" className="text-[13.5px] font-medium text-[#F3F4F6] mt-2.5 mb-1 first:mt-0 text-start">{children}</h4>
   ),
 
   /* --- Lists --- */
   ul: ({ children }) => (
-    <ul className="mb-2.5 last:mb-0 pl-5 space-y-1 list-disc marker:text-[#6B7280] text-[#D1D5DB]">{children}</ul>
+    <ul dir="auto" className="mb-2.5 last:mb-0 ps-5 space-y-1 list-disc marker:text-[#6B7280] text-[#D1D5DB] text-start">{children}</ul>
   ),
   ol: ({ children }) => (
-    <ol className="mb-2.5 last:mb-0 pl-5 space-y-1 list-decimal marker:text-[#6B7280] text-[#D1D5DB]">{children}</ol>
+    <ol dir="auto" className="mb-2.5 last:mb-0 ps-5 space-y-1 list-decimal marker:text-[#6B7280] text-[#D1D5DB] text-start">{children}</ol>
   ),
   li: ({ children }) => (
-    <li className="leading-relaxed">{children}</li>
+    <li dir="auto" className="leading-relaxed text-start">{children}</li>
   ),
 
   /* --- Inline --- */
@@ -159,8 +159,8 @@ const markdownComponents = {
 
   /* --- Code --- */
   pre: ({ children }) => (
-    <div className="my-3 overflow-hidden rounded-lg border border-[#272B35] bg-[#0C0E13]">
-      <pre className="p-3.5 overflow-x-auto text-[12.5px] font-mono text-[#D1D5DB] leading-relaxed">
+    <div dir="ltr" className="my-3 overflow-hidden rounded-lg border border-[#272B35] bg-[#0C0E13] text-left">
+      <pre className="p-3.5 overflow-x-auto text-[12.5px] font-mono text-[#D1D5DB] leading-relaxed text-left">
         {children}
       </pre>
     </div>
@@ -171,13 +171,14 @@ const markdownComponents = {
 
     if (hasLang || isMultiLine) {
       return (
-        <code className={`block font-mono text-[12.5px] ${className || ""}`} {...props}>
+        <code dir="ltr" className={`block font-mono text-[12.5px] text-left ${className || ""}`} {...props}>
           {children}
         </code>
       );
     }
     return (
       <code
+        dir="ltr"
         className="px-1.5 py-0.5 text-[12px] font-mono bg-[#1E2230] text-[#E5E7EB] rounded border border-[#272B35]"
         {...props}
       >
@@ -188,7 +189,7 @@ const markdownComponents = {
 
   /* --- Blockquote --- */
   blockquote: ({ children }) => (
-    <blockquote className="my-3 pl-3.5 border-l-2 border-[#3B82F6] text-[#9CA3AF] italic">
+    <blockquote dir="auto" className="my-3 ps-3.5 border-s-2 border-[#3B82F6] text-[#9CA3AF] italic text-start">
       {children}
     </blockquote>
   ),
@@ -199,7 +200,7 @@ const markdownComponents = {
   /* --- Table (GitHub Flavored Markdown) --- */
   table: ({ children }) => (
     <div className="my-3.5 max-w-full overflow-x-auto rounded-lg border border-[#272B35] bg-[#10131B] shadow-sm animate-table-in">
-      <table className="w-full min-w-[500px] text-[13px] border-collapse text-left">
+      <table className="w-full min-w-[500px] text-[13px] border-collapse text-start">
         {children}
       </table>
     </div>
@@ -217,7 +218,7 @@ const markdownComponents = {
   ),
   th: ({ children, style }) => (
     <th
-      className="px-4 py-3 font-semibold whitespace-nowrap text-[#9CA3AF]"
+      className="px-4 py-3 font-semibold whitespace-nowrap text-[#9CA3AF] text-start"
       style={style}
     >
       {children}
@@ -228,7 +229,7 @@ const markdownComponents = {
     const isNumeric = /^[\$€£¥]?\s*[\d,]+\.?\d*\s*%?$/.test(String(text).trim());
     return (
       <td
-        className={`px-4 py-2.5 whitespace-nowrap ${isNumeric ? "text-right tabular-nums font-mono text-[12.5px]" : ""}`}
+        className={`px-4 py-2.5 whitespace-nowrap ${isNumeric ? "text-right tabular-nums font-mono text-[12.5px]" : "text-start"}`}
         style={style}
       >
         {children}
@@ -249,7 +250,7 @@ export default function MarkdownContent({ content }) {
   const cleanedContent = preprocessMarkdown(content);
 
   return (
-    <div className="text-[14px] leading-relaxed break-words">
+    <div dir="auto" className="text-[14px] leading-relaxed break-words text-start">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={markdownComponents}
