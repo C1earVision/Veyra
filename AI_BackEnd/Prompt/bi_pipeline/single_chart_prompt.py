@@ -70,7 +70,8 @@ YOUR TASK
    - Use enterprise hex colors: #10B981 (emerald), #3B82F6 (blue), #F59E0B (amber), #6366F1 (indigo), #06B6D4 (cyan), #EF4444 (rose).
 
 6. Formulate a concise summary:
-   - Provide a direct, professional answer in `summary` explaining the key findings and exact numbers in 2-3 bullet points.
+   - Provide a direct, professional answer in `summary` that directly answers the user's question with the expected metrics, followed optionally by 1-2 actionable business recommendations (`### Recommendations`).
+   - Do NOT include generic 'Key Takeaways' sections — state the direct answer cleanly.
 
 ### DATA LINKING RULE:
 - Set `dataSourceId` to "single". The system will automatically populate the visualization using the result of your SQL query.

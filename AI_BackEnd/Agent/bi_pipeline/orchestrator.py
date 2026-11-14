@@ -810,10 +810,9 @@ def _normalize_single_chart_content(summary: str) -> str:
     text = (summary or "").strip()
     if not text:
         return (
-            "### Key Takeaways\n"
-            "- Visualization generated from your query.\n\n"
+            "Here is the data answering your inquiry.\n\n"
             "### Recommendations\n"
-            "- Adjust filters or ask a follow-up for more detail."
+            "- Adjust filters or explore further details in the data."
         )
     return text
 
@@ -840,8 +839,8 @@ async def _synthesize_single_chart_answer(
         lang_instruction = (
             "\n\nLANGUAGE INSTRUCTION (ARABIC):\n"
             "- The user's query is in Arabic.\n"
-            "- You MUST write your ENTIRE response (direct answer, key takeaways, recommendations) in Arabic.\n"
-            "- State all metrics, comparisons, differences, and percentages clearly in natural Arabic."
+            "- You MUST write your ENTIRE response (direct answer and recommendations) in natural Arabic.\n"
+            "- State all metrics, comparisons, differences, and percentages clearly in Arabic."
         )
 
     synthesis_prompt = (
@@ -856,13 +855,13 @@ async def _synthesize_single_chart_answer(
         "1. Direct Answer (MANDATORY & AT THE VERY TOP):\n"
         "   - Start immediately with a clear, direct answer to the user's question.\n"
         "   - Quote exact figures, calculations, differences, or percentage changes from the data (e.g. comparing two periods, top items, totals).\n"
-        "   - Never say 'the chart shows' or make vague statements. Answer what they asked directly with the exact numbers.\n\n"
-        "2. ### Key Takeaways\n"
-        "   - 2 to 3 concise bullet points highlighting critical context or secondary findings from the data.\n\n"
-        "3. ### Recommendations\n"
-        "   - 1 to 2 actionable strategic suggestions based on the findings.\n\n"
+        "   - Never say 'the chart shows' or make vague statements. Answer what they asked directly with the exact numbers.\n"
+        "   - Do NOT include any 'Key Takeaways' heading — state the direct answer cleanly without repetitive filler.\n\n"
+        "2. ### Recommendations (or ### التوصيات in Arabic):\n"
+        "   - 1 to 2 actionable strategic business suggestions based on the finding.\n\n"
         "RULES:\n"
         "- Base every figure strictly on the provided EXECUTED DATA RESULTS. Never simulate or invent data.\n"
+        "- Do NOT include a 'Key Takeaways' section — keep the answer punchy, direct, and zero-repetition.\n"
         "- Do NOT describe the visual UI layout (axes, colors, sliders, widgets). The user sees the visual.\n"
         f"{lang_instruction}"
     )

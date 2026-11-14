@@ -128,8 +128,8 @@ class SingleChartPlan(BaseModel):
     slider_operator: Literal[">=", "<=", ">", "<", "=="] = ">="
     summary: str = Field(
         description=(
-            "Markdown with '### Key Takeaways' (2-4 bullets with numbers) and "
-            "optional '### Recommendations' (1-2 bullets). No dashboard layout prose."
+            "Markdown leading with a direct answer with exact numbers and "
+            "optional '### Recommendations' (1-2 bullets). No 'Key Takeaways', no dashboard layout prose."
         )
     )
 
@@ -325,9 +325,9 @@ class FinalDashboardOutput(BaseModel):
     """
     content: str = Field(
         description=(
-            "Markdown containing ONLY '### Key Takeaways' (3-5 bullets) "
-            "and '### Recommendations' (2-4 bullets). "
-            "NO dashboard descriptions, NO SQL details, NO pleasantries."
+            "Markdown text starting with a direct, comprehensive answer to the user's question with headline numbers and metrics, "
+            "followed by '### Key Takeaways' (3-5 data-backed bullets) and '### Recommendations' (2-4 bullets). "
+            "NO generic dashboard layout descriptions, NO SQL details, NO pleasantries."
         )
     )
     dashboard_title: str = Field(description="High-level report title")

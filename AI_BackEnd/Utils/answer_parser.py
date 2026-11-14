@@ -63,13 +63,6 @@ def _clean_dashboard_content(content: str) -> str:
         return ""
 
     text = content.strip()
-    takeaways_match = re.search(
-        r"(?:^|\n)(#{1,4}\s*Key Takeaways|\*\*Key Takeaways\*\*)",
-        text,
-        re.IGNORECASE,
-    )
-    if takeaways_match:
-        text = text[takeaways_match.start() :].strip()
 
     unwanted_section_patterns = [
         r"(?i)#{1,4}\s*(?:Dashboard Overview|Dashboard Structure|Report Structure|Visualizations?|Dashboard Pages?|Pages? Breakdown|Report Pages?|Report Overview|Overview of the Dashboard).*?(?=(?:\n#{1,4}|\Z))",
