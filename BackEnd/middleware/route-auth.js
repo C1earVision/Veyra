@@ -10,7 +10,7 @@ const auth = async (req,res,next)=>{
   const token = authHeader.split(' ')[1]
   try {
     const payLoad = jwt.verify(token, process.env.JWT_SECRET)
-    req.user = {admin:payLoad.admin , customerId:payLoad.customerId, name:payLoad.name}
+    req.user = {admin:payLoad.admin, customerId:payLoad.customerId, name:payLoad.name, subscriptionTier:payLoad.subscriptionTier}
     next()
   } catch (error) {
     throw new CustomAPIError('Authorization Error', StatusCodes.UNAUTHORIZED)

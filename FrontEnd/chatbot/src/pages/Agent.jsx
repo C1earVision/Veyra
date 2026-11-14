@@ -1724,15 +1724,20 @@ export default function App() {
               </p>
             </div>
 
-            <div className="pt-0.5 flex items-center justify-between">
+            <div className="pt-0.5 flex items-center justify-between gap-2">
               {user && (
-                <p className="text-[11.5px] text-[#6B7280] truncate max-w-[130px]" title={user.Email}>
-                  {user.Email}
-                </p>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11.5px] text-[#E5E7EB] font-medium truncate" title={user.Email}>
+                    {user.Email}
+                  </p>
+                  <p className="text-[10.5px] text-blue-400 font-medium truncate" title={user.SubscriptionTier || user.subscriptionTier || "Free Access"}>
+                    {user.SubscriptionTier || user.subscriptionTier || "Free Access"}
+                  </p>
+                </div>
               )}
               <button
                 onClick={handleLogout}
-                className="flex items-center gap-1.5 px-2 py-1 rounded text-[12px] text-[#9CA3AF] hover:text-[#D1D5DB] hover:bg-[#151820] transition-colors cursor-pointer ml-auto"
+                className="flex items-center gap-1.5 px-2 py-1 rounded text-[12px] text-[#9CA3AF] hover:text-[#D1D5DB] hover:bg-[#151820] transition-colors cursor-pointer ml-auto flex-shrink-0"
                 title="Sign out"
               >
                 <LogOut size={14} />

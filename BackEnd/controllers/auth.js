@@ -4,8 +4,8 @@ const dbConnect = require('../db/dbconfig')
 const bcrypt = require('bcryptjs')
 const jwt = require('jsonwebtoken')
 
-const createJWT = function (admin, _id, name){
-  return jwt.sign({admin:admin ,customerId:_id, name:name}, process.env.JWT_SECRET, {expiresIn:process.env.JWT_LIFETIME})
+const createJWT = function (admin, _id, name, subscriptionTier){
+  return jwt.sign({admin:admin, customerId:_id, name:name, subscriptionTier:subscriptionTier}, process.env.JWT_SECRET, {expiresIn:process.env.JWT_LIFETIME})
 }
 
 const comparePassword = async function (sentPass, originalPass){
@@ -18,32 +18,20 @@ const login = async (req,res)=>{
   const db = await dbConnect;
   const result = await db.query(`
     SELECT 
-      c."CustomerId",
-      c."Name",
-      c."Email",
-      c."Password",
-      c."Country",
-      c."City",
-      c."Street",
-      c."State",
-      c."AdminState",
-      STRING_AGG(cp."Phone", ',') AS "PhoneNumbers"
+      "CustomerId",
+      "Name",
+      "Email",
+      "Password",
+      "Country",
+      "City",
+      "Street",
+      "State",
+      "AdminState",
+      "SubscriptionTier"
     FROM 
-      "Customer" c
-    LEFT JOIN 
-      "CPhone" cp ON c."CustomerId" = cp."CustomerId"
+      "users"
     WHERE 
-      c."Email" = $1
-    GROUP BY 
-      c."CustomerId", 
-      c."Name", 
-      c."Email", 
-      c."Password", 
-      c."Country", 
-      c."City", 
-      c."Street", 
-      c."State",
-      c."AdminState"
+      "Email" = $1
   `, [email]);
 
   if(result.rows.length === 0){
@@ -51,22 +39,16 @@ const login = async (req,res)=>{
   }
 
   const user = result.rows[0];
-  user.PhoneNumbers = user.PhoneNumbers ? user.PhoneNumbers.split(',') : [];
 
   const passIsMatch = await comparePassword(password, user.Password)
   if(!passIsMatch){
     throw new CustomAPIError('Email or password wrong', StatusCodes.UNAUTHORIZED)
   }
 
-  if (!user.AdminState) {
-    throw new CustomAPIError('Access restricted to business owners / administrators', StatusCodes.FORBIDDEN)
-  }
-
   const { Password: _password, ...safeUser } = user
-  const token = createJWT(user.AdminState, user.CustomerId, user.Name)
+  const token = createJWT(user.AdminState, user.CustomerId, user.Name, user.SubscriptionTier)
   res.status(StatusCodes.OK).json({ user: safeUser, token })
 }
-
 
 module.exports = {
   login
