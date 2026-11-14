@@ -60,7 +60,7 @@ import {
   reconcileSourceWithServer,
   sourceFromQueryResponse,
 } from "../lib/dataSourceSync";
-import { streamAgentQuery, streamDataPhase, streamAssemblyPhase } from "../lib/queryStream";
+import { streamAgentQuery, streamPlanPhase, streamDataPhase, streamAssemblyPhase } from "../lib/queryStream";
 import { authHeaders, getStoredAuth } from "../lib/auth";
 
 /* ─── URL normaliser (unchanged logic) ─── */
@@ -988,27 +988,56 @@ export default function App() {
         }
       };
 
-      // ─── Checkpoint Strategy: Two-phase streaming ───
-      // Phase 1: Data phase (Router → Schema → SQL → Execution)
+      // ─── Checkpoint Strategy: Three-phase streaming ───
+      // Phase 1: Plan phase (Router → Schema Context → Question Planner)
+      let planPhaseResult = null;
       let dataPhaseResult = null;
 
-      await streamDataPhase(AI_API_URL, payLoad, {
+      await streamPlanPhase(AI_API_URL, payLoad, {
         signal: abortController.signal,
         headers: authHeaders(),
         onEvent: (type, data) => {
           if (type === "done") {
-            // Non-BI agent or single-chart path completed fully
+            // Non-BI agent or immediate response completed fully
             payload = normalizeQueryResponse(data.final_response);
-          } else if (type === "data_phase_done") {
-            // BI dashboard: data phase complete, need assembly
-            dataPhaseResult = data.data_phase_result;
+          } else if (type === "plan_phase_done") {
+            // BI query: plan phase complete, need SQL/data next
+            planPhaseResult = data.plan_phase_result;
           } else {
             handleStreamEvent(type, data);
           }
         },
       });
 
-      // Phase 2: Assembly phase (if needed — fresh Vercel timeout window)
+      // Phase 2: Data/SQL phase (SQL Generation + Parallel Execution + Single-chart Synthesis)
+      if (planPhaseResult && !payload) {
+        const stream = activeStreams.get(sessionId);
+        if (stream && !stream.userStopped) {
+          const dataPayload = {
+            plan_phase_result: planPhaseResult,
+            model_id: selectedModel || null,
+            source_id: activeSource?.source_id,
+          };
+
+          await streamDataPhase(AI_API_URL, dataPayload, {
+            signal: abortController.signal,
+            headers: authHeaders(),
+            onEvent: (type, data) => {
+              if (type === "done") {
+                // Single-chart path completed fully
+                payload = normalizeQueryResponse(data.final_response);
+              } else if (type === "data_phase_done") {
+                // Multi-query dashboard: data phase complete, need assembly next
+                dataPhaseResult = data.data_phase_result;
+              } else {
+                handleStreamEvent(type, data);
+              }
+            },
+          });
+        }
+      }
+
+      // Phase 3: Assembly phase (Dashboard Assembler layout + hydration for full dashboards)
       if (dataPhaseResult && !payload) {
         const stream = activeStreams.get(sessionId);
         if (stream && !stream.userStopped) {
@@ -1112,11 +1141,15 @@ export default function App() {
       console.error("[Agent sendMessage error]:", err);
       const prevList = stream?.messages || messages;
       const displayError = err.message || err.response?.data?.error || "Please try again.";
+      const timeoutSuffix =
+        displayError.toLowerCase().includes("timeout") || displayError.toLowerCase().includes("no response")
+          ? " (The request may have exceeded the serverless execution limit. Please try again in a moment.)"
+          : "";
       const finalMessages = prevList
         .filter((msg) => !msg.isLoading)
         .concat({
           role: "AI_Message",
-          content: `AI Error: ${displayError}, This request took more than 300 seconds to finish which exceedes Vercel free limit. Try again in a while.`,
+          content: `AI Error: ${displayError}${timeoutSuffix}`,
         });
 
       if (pageRef.current === "agent" && currentChatIdRef.current === sessionId) {

@@ -12,7 +12,13 @@ from Agent.AgenticWorkFlow import (
     CrudAgent,
     analysisAgent,
 )
-from Agent.bi_pipeline.orchestrator import run_bi_pipeline, run_bi_data_phase, run_bi_assembly_phase
+from Agent.bi_pipeline.orchestrator import (
+    run_bi_pipeline,
+    run_bi_plan_phase,
+    run_bi_sql_phase,
+    run_bi_data_phase,
+    run_bi_assembly_phase,
+)
 from Prompt.generalSysPrompt import GENERAL_SYSTEM_PROMPT
 from Prompt.SearchSysPrompt import SEARCH_SYSTEM_PROMPT, get_search_system_prompt
 from Prompt.RagSysPropmt import RAG_SYSTEM_PROMPT, get_rag_system_prompt
@@ -349,7 +355,7 @@ async def run_query_stream(
 
 
 
-async def run_query_stream_data_phase(
+async def run_query_stream_plan_phase(
     query,
     active_source,
     active_db,
@@ -358,11 +364,11 @@ async def run_query_stream_data_phase(
     cancel_scope: Optional[QueryCancelScope] = None,
     is_admin: bool = False,
 ) -> dict:
-    """Checkpoint Phase 1: Route → Data Phase.
+    """Checkpoint Phase 1: Route query + Schema Context + Question Planner.
 
-    Returns a dict with the data-phase results (executed queries, steps, etc.)
-    or a 'final_response' key if the pipeline short-circuited (non-BI agent,
-    single-chart path, or permission denied).
+    Emits either:
+    - 'done' with 'final_response' (if non-BI agent, no DB connected, or permission denied)
+    - 'plan_phase_done' with 'plan_phase_result' (if BI agent)
     """
     router_model = _resolve_router_model(query.model_id)
     router_provider = "gemini" if router_model and "gemini" in router_model.lower() else "groq"
@@ -461,12 +467,12 @@ async def run_query_stream_data_phase(
             ).model_dump(mode="json")
         }
 
-    # BI agent: run data phase
+    # BI agent: run plan phase (Schema Context + Question Planner)
     tables = active_source.get("tables", []) if active_source else []
     if active_db and not tables:
         tables = list(active_db.get_usable_table_names())
 
-    data_result = await run_bi_data_phase(
+    plan_result = await run_bi_plan_phase(
         user_query=query.question,
         db=active_db,
         tables=tables,
@@ -477,24 +483,71 @@ async def run_query_stream_data_phase(
         lang=lang,
     )
 
-    # Merge router trace steps into the data phase steps
+    # Merge router trace steps into the plan phase steps
     router_steps_raw = [s.model_dump() for s in trace_steps]
-    data_result["all_steps"] = router_steps_raw + data_result["all_steps"]
-    data_result["source_id"] = active_source["source_id"] if active_source else "default"
-    data_result["source_name"] = active_source["name"] if active_source else "Default Database"
+    plan_result["all_steps"] = router_steps_raw + plan_result["all_steps"]
+    plan_result["source_id"] = active_source["source_id"] if active_source else "default"
+    plan_result["source_name"] = active_source["name"] if active_source else "Default Database"
+    plan_result["lang"] = lang
+
+    return {"plan_phase_result": plan_result}
+
+
+async def run_query_stream_data_phase(
+    plan_phase_result_or_query: Any,
+    active_source,
+    active_db,
+    emit: EmitFn,
+    request=None,
+    cancel_scope: Optional[QueryCancelScope] = None,
+    is_admin: bool = False,
+    model_id: Optional[str] = None,
+) -> dict:
+    """Checkpoint Phase 2: SQL Generation & Execution.
+
+    Accepts either:
+    1. plan_phase_result dict (3-stage pipeline)
+    2. QueryRequest object (legacy 2-stage pipeline)
+    """
+    if isinstance(plan_phase_result_or_query, dict) and "plan_phase_result" in plan_phase_result_or_query:
+        plan_phase_result = plan_phase_result_or_query["plan_phase_result"]
+    elif isinstance(plan_phase_result_or_query, dict) and "user_query" in plan_phase_result_or_query:
+        plan_phase_result = plan_phase_result_or_query
+    else:
+        # Legacy 2-stage path where the input is a QueryRequest
+        query = plan_phase_result_or_query
+        plan_out = await run_query_stream_plan_phase(
+            query, active_source, active_db, emit, request, cancel_scope, is_admin
+        )
+        if "final_response" in plan_out:
+            return plan_out
+        plan_phase_result = plan_out["plan_phase_result"]
+        model_id = query.model_id
+
+    # Run SQL phase with plan_phase_result
+    sql_result = await run_bi_sql_phase(
+        plan_phase_result=plan_phase_result,
+        db=active_db,
+        model_id=model_id,
+        emit=emit,
+        request=request,
+        cancel_scope=cancel_scope,
+    )
+
+    source_id = plan_phase_result.get("source_id") or (active_source["source_id"] if active_source else "default")
+    source_name = plan_phase_result.get("source_name") or (active_source["name"] if active_source else "Default Database")
+    sql_result["source_id"] = source_id
+    sql_result["source_name"] = source_name
 
     # If single-chart path was taken, it's already complete
-    if data_result.get("is_single_chart") and data_result.get("single_chart_response"):
-        resp = data_result["single_chart_response"]
-        resp["steps"] = data_result["all_steps"]
-        resp["source_id"] = data_result["source_id"]
-        resp["source_name"] = data_result["source_name"]
+    if sql_result.get("is_single_chart") and sql_result.get("single_chart_response"):
+        resp = sql_result["single_chart_response"]
+        resp["steps"] = sql_result["all_steps"]
+        resp["source_id"] = source_id
+        resp["source_name"] = source_name
         return {"final_response": resp}
 
-    # Pass language through to assembly phase
-    data_result["lang"] = lang
-
-    return {"data_phase_result": data_result}
+    return {"data_phase_result": sql_result}
 
 
 async def run_query_stream_assembly_phase(

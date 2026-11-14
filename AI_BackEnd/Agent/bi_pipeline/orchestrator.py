@@ -1777,9 +1777,9 @@ async def run_bi_pipeline(
     )
 
 
-# ─── Checkpoint Strategy: Split Pipeline into Two Phases ──────────────────────
+# ─── Checkpoint Strategy: Split Pipeline into Three Phases ────────────────────
 
-async def run_bi_data_phase(
+async def run_bi_plan_phase(
     user_query: str,
     db,
     tables: List[str],
@@ -1790,24 +1790,15 @@ async def run_bi_data_phase(
     cancel_scope: Optional[QueryCancelScope] = None,
     lang: str = "en",
 ) -> Dict[str, Any]:
-    """Phase 1 of the checkpoint strategy: Schema → Questions → SQL → Execution.
+    """Phase 1: Schema Context + Question Planner.
 
-    Runs Steps 0-3 of the BI pipeline and returns intermediate results
-    so they can be passed to run_bi_assembly_phase in a separate request,
-    giving each phase its own fresh Vercel timeout window.
-
-    Returns:
-        Dict with keys:
-        - executed_queries: List of ExecutedQuery dicts (serialized)
-        - all_steps: List of AgentStep dicts (serialized)
-        - questions_output: BusinessQuestionsOutput dict (serialized)
-        - user_query: The original user query
-        - is_single_chart: Whether the single-chart pipeline was used
-        - single_chart_response: If single-chart path was taken, the full QueryResponse dict
+    Runs Step 0 and Step 1 of the BI pipeline and determines whether
+    the query asks for a single chart/table or a full dashboard.
+    Returns plan details so SQL generation can run in a separate request.
     """
     pipeline_start = time.time()
     print(f"\n{'='*60}")
-    print(f"[BI Pipeline] === DATA PHASE START ===")
+    print(f"[BI Pipeline] === PLAN PHASE START ===")
     print(f"[BI Pipeline] Query: {user_query[:100]}{'…' if len(user_query) > 100 else ''}")
     print(f"[BI Pipeline] Tables: {tables}")
     print(f"[BI Pipeline] Model ID: {model_id or 'default'}")
@@ -1891,12 +1882,14 @@ async def run_bi_data_phase(
     for q in questions_output.questions:
         print(f"[BI Pipeline]   {q.id}. [{q.intent.value}] {q.question}")
 
+    is_single = _should_use_single_chart_pipeline(user_query, questions_output)
+
     all_steps.append(AgentStep(
         type="reasoning",
         label="Question Planner Result",
         detail=(
             f"Intent: {questions_output.user_intent_summary}\n"
-            f"Single chart: {questions_output.is_single_chart}\n"
+            f"Single chart: {is_single}\n"
             f"Questions ({len(questions_output.questions)}):\n"
             + "\n".join(
                 f"  {q.id}. [{q.intent.value}] {q.question}"
@@ -1911,8 +1904,53 @@ async def run_bi_data_phase(
             "phase": "question_planner",
         })
 
+    total_time = time.time() - pipeline_start
+    print(f"\n{'='*60}")
+    print(f"[BI Pipeline] === PLAN PHASE COMPLETE ({total_time:.1f}s) ===")
+    print(f"{'='*60}\n")
+
+    return {
+        "is_single_chart": is_single,
+        "questions_output": questions_output.model_dump(),
+        "schema_context": schema_context,
+        "user_query": user_query,
+        "all_steps": [s.model_dump() for s in all_steps],
+        "lang": lang,
+        "tables": tables,
+    }
+
+
+async def run_bi_sql_phase(
+    plan_phase_result: Dict[str, Any],
+    db,
+    *,
+    model_id: Optional[str] = None,
+    emit: Optional[EmitFn] = None,
+    request=None,
+    cancel_scope: Optional[QueryCancelScope] = None,
+) -> Dict[str, Any]:
+    """Phase 2: SQL Generation + Execution (+ Synthesis for single chart).
+
+    If is_single_chart is True:
+      Runs _run_single_chart_pipeline and completes the request.
+    Otherwise:
+      Runs Step 2 (SQL Engineer) + Step 3 (Parallel SQL) + Step 3b (Retry).
+    """
+    sql_start = time.time()
+    user_query = plan_phase_result["user_query"]
+    schema_context = plan_phase_result["schema_context"]
+    lang = plan_phase_result.get("lang", "en")
+    is_single_chart = plan_phase_result.get("is_single_chart", False)
+    all_steps = [AgentStep(**s) for s in plan_phase_result.get("all_steps", [])]
+
+    print(f"\n{'='*60}")
+    print(f"[BI Pipeline] === SQL / DATA PHASE START (single={is_single_chart}) ===")
+    print(f"[BI Pipeline] Query: {user_query[:100]}{'…' if len(user_query) > 100 else ''}")
+    print(f"[BI Pipeline] Model ID: {model_id or 'default'}")
+    print(f"{'='*60}")
+
     # ── Check for single-chart path ──
-    if _should_use_single_chart_pipeline(user_query, questions_output):
+    if is_single_chart:
         response = await _run_single_chart_pipeline(
             user_query,
             db,
@@ -1921,20 +1959,22 @@ async def run_bi_data_phase(
             emit=emit,
             cancel_scope=cancel_scope,
             all_steps=all_steps,
-            pipeline_start=pipeline_start,
+            pipeline_start=sql_start,
             lang=lang,
         )
-        print(f"[BI Pipeline] === DATA PHASE COMPLETE (single chart path) ===")
+        print(f"[BI Pipeline] === SQL / DATA PHASE COMPLETE (single chart path) ===")
         return {
             "is_single_chart": True,
             "single_chart_response": response.model_dump(mode="json"),
             "executed_queries": [],
             "all_steps": [s.model_dump() for s in all_steps],
-            "questions_output": questions_output.model_dump(),
+            "questions_output": plan_phase_result.get("questions_output", {}),
             "user_query": user_query,
+            "lang": lang,
         }
 
-    # ── STEP 2: SQL Engineer (strong model) ──
+    # ── Full Dashboard: STEP 2: SQL Engineer (strong model) ──
+    questions_output = BusinessQuestionsOutput(**plan_phase_result["questions_output"])
     print(f"\n[BI Pipeline] ── STEP 2: SQL Engineer (strong model) ──")
     if emit:
         await emit("status", {
@@ -2033,9 +2073,9 @@ async def run_bi_data_phase(
             detail=f"{eq.question}: {status}",
         ))
 
-    total_time = time.time() - pipeline_start
+    total_time = time.time() - sql_start
     print(f"\n{'='*60}")
-    print(f"[BI Pipeline] === DATA PHASE COMPLETE ({total_time:.1f}s) ===")
+    print(f"[BI Pipeline] === SQL / DATA PHASE COMPLETE ({total_time:.1f}s) ===")
     print(f"{'='*60}\n")
 
     return {
@@ -2047,6 +2087,38 @@ async def run_bi_data_phase(
         "user_query": user_query,
         "lang": lang,
     }
+
+
+async def run_bi_data_phase(
+    user_query: str,
+    db,
+    tables: List[str],
+    *,
+    model_id: Optional[str] = None,
+    emit: Optional[EmitFn] = None,
+    request=None,
+    cancel_scope: Optional[QueryCancelScope] = None,
+    lang: str = "en",
+) -> Dict[str, Any]:
+    """Phase 1 + 2 combined (backward compatible wrapper)."""
+    plan_result = await run_bi_plan_phase(
+        user_query,
+        db,
+        tables,
+        model_id=model_id,
+        emit=emit,
+        request=request,
+        cancel_scope=cancel_scope,
+        lang=lang,
+    )
+    return await run_bi_sql_phase(
+        plan_result,
+        db,
+        model_id=model_id,
+        emit=emit,
+        request=request,
+        cancel_scope=cancel_scope,
+    )
 
 
 async def run_bi_assembly_phase(

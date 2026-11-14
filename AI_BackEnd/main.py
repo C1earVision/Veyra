@@ -5,12 +5,18 @@ from DB.agent_visualizations import get_visualization
 from starlette.responses import JSONResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Any, Dict, Union
 import asyncio
 import os
 from Utils.ModelLoader import is_rate_limit_error, extract_retry_delay, modelLoader
 from Utils.agent_trace import message_content_to_str
-from Utils.query_pipeline import run_query, run_query_stream, run_query_stream_data_phase, run_query_stream_assembly_phase
+from Utils.query_pipeline import (
+    run_query,
+    run_query_stream,
+    run_query_stream_plan_phase,
+    run_query_stream_data_phase,
+    run_query_stream_assembly_phase,
+)
 from Utils.request_context import QueryCancelScope, current_cancel_scope
 from Utils.jwt_auth import (
     auth_from_request,
@@ -54,7 +60,7 @@ origins = [
 
 def _path_requires_auth(path: str) -> bool:
     normalized = path.rstrip("/") or "/"
-    if normalized in ("/query", "/query/stream", "/query/stream/data", "/query/stream/assemble", "/models"):
+    if normalized in ("/query", "/query/stream", "/query/stream/plan", "/query/stream/data", "/query/stream/assemble", "/models"):
         return True
     return normalized.startswith("/data-sources") or normalized.startswith("/chats")
 
@@ -125,6 +131,12 @@ class QueryRequest(BaseModel):
     question: str
     source_id: Optional[str] = None
     model_id: Optional[str] = None
+
+
+class DataPhaseRequest(BaseModel):
+    plan_phase_result: Dict[str, Any]
+    model_id: Optional[str] = None
+    source_id: Optional[str] = None
 
 
 class AssemblyRequest(BaseModel):
@@ -652,18 +664,18 @@ async def query_travel_agent_stream(query: QueryRequest, request: Request):
 
 # ─── Checkpoint Strategy Endpoints ────────────────────────────────────────────
 
-@app.options("/query/stream/data")
-async def options_query_stream_data():
+@app.options("/query/stream/plan")
+async def options_query_stream_plan():
     return JSONResponse(status_code=200, content={"status": "ok"})
 
 
-@app.post("/query/stream/data")
-async def query_stream_data_phase(query: QueryRequest, request: Request):
-    """Checkpoint Phase 1: Router + Schema + Questions + SQL + Execution.
+@app.post("/query/stream/plan")
+async def query_stream_plan_phase(query: QueryRequest, request: Request):
+    """Checkpoint Phase 1: Router + Schema + Question Planner.
 
     Streams SSE events for thinking/steps, then emits either:
-    - 'done' with a final_response (non-BI agent or single-chart path)
-    - 'data_phase_done' with data_phase_result (needs assembly phase next)
+    - 'done' with a final_response (non-BI agent, no DB connected, or permission denied)
+    - 'plan_phase_done' with plan_phase_result (needs SQL data phase next)
     """
     auth = auth_from_request(request)
     bearer = bearer_from_request(request)
@@ -685,10 +697,10 @@ async def query_stream_data_phase(query: QueryRequest, request: Request):
             scope_token = current_cancel_scope.set(cancel_scope)
             try:
                 print(
-                    f"[stream/data] Query: {query.question} | Model: {query.model_id or 'default'}"
+                    f"[stream/plan] Query: {query.question} | Model: {query.model_id or 'default'}"
                 )
                 with auth_request_context(auth, bearer):
-                    result = await run_query_stream_data_phase(
+                    result = await run_query_stream_plan_phase(
                         query,
                         active_source,
                         active_db,
@@ -696,6 +708,135 @@ async def query_stream_data_phase(query: QueryRequest, request: Request):
                         request=request,
                         cancel_scope=cancel_scope,
                         is_admin=auth.is_admin,
+                    )
+
+                if not cancel_scope.is_cancelled():
+                    if "final_response" in result:
+                        resp = result["final_response"]
+                        if active_source:
+                            resp["source_id"] = resp.get("source_id") or active_source.get("source_id")
+                            resp["source_name"] = resp.get("source_name") or active_source.get("name")
+                        if fell_back:
+                            resp["source_fallback"] = True
+                            if requested:
+                                resp["source_requested_id"] = requested
+                        await queue.put(format_sse("done", result))
+                    else:
+                        data = result["plan_phase_result"]
+                        if active_source:
+                            data["source_id"] = data.get("source_id") or active_source.get("source_id")
+                            data["source_name"] = data.get("source_name") or active_source.get("name")
+                        if fell_back:
+                            data["source_fallback"] = True
+                        await queue.put(format_sse("plan_phase_done", result))
+            except asyncio.CancelledError:
+                print("[stream/plan] Query cancelled")
+                await queue.put(format_sse("error", {"error": "cancelled"}))
+            except Exception as e:
+                import traceback
+                print(f"\n{'!'*60}")
+                print(f"[stream/plan ERROR] {type(e).__name__}: {e}")
+                traceback.print_exc()
+                print(f"{'!'*60}\n")
+                error_msg = str(e) or repr(e) or "Unknown stream error"
+                await queue.put(format_sse("error", {"error": error_msg, "type": type(e).__name__}))
+            finally:
+                current_cancel_scope.reset(scope_token)
+                await cancel_scope.abort_http()
+                await queue.put(None)
+
+        task = asyncio.create_task(runner())
+        try:
+            while True:
+                if await request.is_disconnected():
+                    cancel_scope.cancel()
+                    await cancel_scope.abort_http()
+                    task.cancel()
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=0.15)
+                except asyncio.TimeoutError:
+                    continue
+                if item is None:
+                    break
+                yield item
+        finally:
+            cancel_scope.cancel()
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            await cancel_scope.abort_http()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.options("/query/stream/data")
+async def options_query_stream_data():
+    return JSONResponse(status_code=200, content={"status": "ok"})
+
+
+@app.post("/query/stream/data")
+async def query_stream_data_phase(body: Union[DataPhaseRequest, QueryRequest], request: Request):
+    """Checkpoint Phase 2: SQL Generation + Execution (+ Synthesis for single chart).
+
+    Streams SSE events for SQL generation/execution, then emits either:
+    - 'done' with a final_response (if single-chart path completed)
+    - 'data_phase_done' with data_phase_result (if multi-query dashboard, needs assembly next)
+    """
+    auth = auth_from_request(request)
+    bearer = bearer_from_request(request)
+    user_id = str(auth.customer_id) if auth else None
+
+    # Resolve source ID from either DataPhaseRequest or QueryRequest
+    if isinstance(body, DataPhaseRequest) or hasattr(body, "plan_phase_result"):
+        target_source_id = body.source_id or body.plan_phase_result.get("source_id")
+        model_id = body.model_id
+        input_payload = body.plan_phase_result
+    else:
+        target_source_id = body.source_id
+        model_id = body.model_id
+        input_payload = body
+
+    active_source, active_db, fell_back, requested = _resolve_query_source(
+        target_source_id, user_id=user_id
+    )
+
+    async def event_generator():
+        queue: asyncio.Queue = asyncio.Queue()
+        cancel_scope = QueryCancelScope()
+
+        async def emit(event_type: str, payload: dict) -> None:
+            if cancel_scope.is_cancelled():
+                return
+            await queue.put(format_sse(event_type, payload))
+
+        async def runner() -> None:
+            scope_token = current_cancel_scope.set(cancel_scope)
+            try:
+                print(
+                    f"[stream/data] Starting data/SQL phase | Model: {model_id or 'default'}"
+                )
+                with auth_request_context(auth, bearer):
+                    result = await run_query_stream_data_phase(
+                        input_payload,
+                        active_source,
+                        active_db,
+                        emit=emit,
+                        request=request,
+                        cancel_scope=cancel_scope,
+                        is_admin=auth.is_admin,
+                        model_id=model_id,
                     )
 
                 if not cancel_scope.is_cancelled():

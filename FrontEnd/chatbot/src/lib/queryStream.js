@@ -33,10 +33,45 @@ export async function streamAgentQuery(baseUrl, payload, { signal, headers = {},
 
 
 /**
- * Checkpoint Phase 1: POST /query/stream/data
+ * Checkpoint Phase 1: POST /query/stream/plan
  * Streams SSE events then returns via onEvent either:
- * - 'done' with { final_response } (non-BI agent or single-chart)
- * - 'data_phase_done' with { data_phase_result } (needs assembly next)
+ * - 'done' with { final_response } (non-BI agent, no DB, or permission denied)
+ * - 'plan_phase_done' with { plan_phase_result } (BI query: needs SQL/data phase next)
+ */
+export async function streamPlanPhase(baseUrl, payload, { signal, headers = {}, onEvent }) {
+  const url = `${baseUrl.replace(/\/$/, "")}/query/stream/plan`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+      ...headers,
+    },
+    body: JSON.stringify(payload),
+    signal,
+  });
+
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errJson = await res.json();
+      detail = errJson.error || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail || "Plan phase stream request failed");
+  }
+
+  await _consumeSSE(res, onEvent, signal);
+}
+
+
+/**
+ * Checkpoint Phase 2: POST /query/stream/data
+ * Sends plan_phase_result, runs SQL generation and parallel execution.
+ * Streams SSE events then returns via onEvent either:
+ * - 'done' with { final_response } (single-chart completed)
+ * - 'data_phase_done' with { data_phase_result } (full dashboard: needs assembly next)
  */
 export async function streamDataPhase(baseUrl, payload, { signal, headers = {}, onEvent }) {
   const url = `${baseUrl.replace(/\/$/, "")}/query/stream/data`;
